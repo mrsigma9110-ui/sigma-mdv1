@@ -1,4 +1,4 @@
-const { cmd } = require('../sigma');
+const { cmd } = require('../arslan');
 const axios = require('axios');
 const { fakevCard } = require('../lib/fakevCard');
 

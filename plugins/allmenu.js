@@ -44,7 +44,7 @@ ${menuText}
 `.trim();
 
         await conn.sendMessage(m.chat, {
-            image: { url: "https://mhcloud.kesug.com/images/sigma-techx.png" },
+            image: { url: "https://mhcloud.kesug.com/imag../arslan-techx.png" },
             caption,
             contextInfo: {
                 forwardingScore: 999,

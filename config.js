@@ -61,7 +61,7 @@ module.exports = {
     // ===========================================================
     // 7. IMAGES & LIENS
     // ===========================================================
-    IMAGE_PATH: 'https://mhcloud.kesug.com/images/sigma-techx.png',
+    IMAGE_PATH: 'https://mhcloud.kesug.com/imag../arslan-techx.png',
     CHANNEL_LINK: 'https://whatsapp.com/channel/0029Vb7ibWzFy729yHIH8m1y',
     
     // ===========================================================
