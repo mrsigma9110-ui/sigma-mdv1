@@ -1,67 +1,87 @@
-const { cmd } = require('../arslan')
+const { cmd } = require('../arslan');
+const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
+
+function unwrapMessage(message) {
+    let msg = message || {};
+    let changed = true;
+    while (changed) {
+        changed = false;
+        for (const key of [
+            'ephemeralMessage',
+            'viewOnceMessage',
+            'viewOnceMessageV2',
+            'viewOnceMessageV2Extension',
+            'documentWithCaptionMessage'
+        ]) {
+            if (msg && msg[key] && msg[key].message) {
+                msg = msg[key].message;
+                changed = true;
+                break;
+            }
+        }
+    }
+    return msg;
+}
+
+function getQuotedMessage(m) {
+    const quoted = m && m.quoted;
+    if (!quoted) return null;
+    return unwrapMessage(quoted.message || quoted);
+}
+
+async function downloadQuoted(content, type) {
+    const stream = await downloadContentFromMessage(content, type);
+    const chunks = [];
+    for await (const chunk of stream) chunks.push(chunk);
+    return Buffer.concat(chunks);
+}
 
 cmd({
-    pattern: "vv",
-    alias: ["viewonce", "view", "open"],
-    react: "🥺",
-    desc: "Retrieve view-once media (Owner only)",
-    category: "owner",
+    pattern: 'vv',
+    alias: ['viewonce', 'view', 'open'],
+    react: '🥺',
+    desc: 'Retrieve quoted view-once media (Owner only)',
+    category: 'owner',
     filename: __filename
-},
-async (conn, mek, m, { from, isCreator, reply }) => {
+}, async (conn, mek, m, { from, isCreator, reply }) => {
     try {
-        if (!isCreator)
-            return reply("*YEH COMMAND SIRF BOT OWNER KE LIYE HAI 😎*")
+        if (!isCreator) return reply('*YEH COMMAND SIRF BOT OWNER KE LIYE HAI 😎*');
 
-        if (!m.quoted)
+        const msg = getQuotedMessage(m);
+        if (!msg) {
             return reply(
-                "*🥺 KISI VIEW ONCE PHOTO / VIDEO / AUDIO KO REPLY KARO*\n\n" +
-                "*Phir likho:* `.vv`\n\n" +
-                "*Phir dekho kamal 😎*"
-            )
-
-        // 🔥 VIEW ONCE FIX
-        let quoted = m.quoted
-        let msg = quoted.message
-
-        if (msg?.viewOnceMessageV2) {
-            msg = msg.viewOnceMessageV2.message
-        } else if (msg?.viewOnceMessageV2Extension) {
-            msg = msg.viewOnceMessageV2Extension.message
+                '*🥺 VIEW ONCE PHOTO / VIDEO / AUDIO KO REPLY KARO*\n\n' +
+                '*Phir likho:* `.vv`'
+            );
         }
 
-        const type = Object.keys(msg)[0]
-        const buffer = await quoted.download()
+        const type = Object.keys(msg).find(k => /^(imageMessage|videoMessage|audioMessage)$/.test(k));
+        if (!type) return reply('*❌ SIRF VIEW-ONCE PHOTO / VIDEO / AUDIO SUPPORT HAI 🥺*');
 
-        let content = {}
+        const media = msg[type];
+        const buffer = await downloadQuoted(media, type.replace('Message', ''));
+        if (!buffer || !buffer.length) throw new Error('Empty media buffer');
 
-        if (type === "imageMessage") {
-            content = {
+        if (type === 'imageMessage') {
+            await conn.sendMessage(from, {
                 image: buffer,
-                caption: quoted.text || ""
-            }
-        } 
-        else if (type === "videoMessage") {
-            content = {
+                caption: media.caption || ''
+            }, { quoted: mek });
+        } else if (type === 'videoMessage') {
+            await conn.sendMessage(from, {
                 video: buffer,
-                caption: quoted.text || ""
-            }
-        } 
-        else if (type === "audioMessage") {
-            content = {
+                caption: media.caption || '',
+                gifPlayback: false
+            }, { quoted: mek });
+        } else {
+            await conn.sendMessage(from, {
                 audio: buffer,
-                mimetype: "audio/mp4",
+                mimetype: media.mimetype || 'audio/mp4',
                 ptt: false
-            }
-        } 
-        else {
-            return reply("*❌ YE VIEW ONCE MEDIA SUPPORT NAHI KARTA 🥺*")
+            }, { quoted: mek });
         }
-
-        await conn.sendMessage(from, content, { quoted: mek })
-
     } catch (e) {
-        console.log("VV ERROR:", e)
-        reply("*❌ VIEW ONCE OPEN KARNE ME ERROR AYA 🥺*")
+        console.error('VV ERROR:', e);
+        await reply('*❌ VIEW-ONCE MEDIA OPEN NAHI HO SAKA. DUBARA `.vv` TRY KARO 🥺*');
     }
-})
+});
