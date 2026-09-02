@@ -9,7 +9,7 @@ const {
     jidDecode,
     downloadContentFromMessage,
     getContentType,
-    fetchLatestWaWebVersion,
+    fetchLatestBaileysVersion,
 } = require('@whiskeysockets/baileys');
 const { arslanmd } = require('./lib/system');
 const config = require('./config');
@@ -50,6 +50,22 @@ connectdb();
 
 const activeSockets = new Map();
 const socketCreationTime = new Map();
+
+// Keep WhatsApp Web protocol version current for pairing/linking.
+let baileysVersion;
+async function getCurrentBaileysVersion() {
+    if (baileysVersion) return baileysVersion;
+    try {
+        const latest = await fetchLatestBaileysVersion();
+        if (latest && Array.isArray(latest.version)) {
+            baileysVersion = latest.version;
+            arslanLog(`Using latest WhatsApp Web version: ${baileysVersion.join('.')}`, 'info');
+        }
+    } catch (e) {
+        arslanLog(`Could not fetch latest WhatsApp Web version: ${e.message}`, 'warning');
+    }
+    return baileysVersion;
+}
 
 
 function createarslanStore() {
@@ -222,22 +238,9 @@ async function arslanPair(number, res = null) {
 
         const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
         const logger = pino({ level: process.env.NODE_ENV === 'production' ? 'fatal' : 'debug' });
+        const currentVersion = await getCurrentBaileysVersion();
 
         const arslanStore = createarslanStore();
-
-        // WhatsApp can reject device linking when the bundled/stale WA Web
-        // revision is used. Fetch the current WhatsApp Web revision before
-        // creating the socket, while keeping a safe fallback for outages.
-        let waWebVersion = [2, 3000, 1042466098];
-        try {
-            const latest = await fetchLatestWaWebVersion();
-            if (latest && Array.isArray(latest.version) && latest.version.length === 3) {
-                waWebVersion = latest.version;
-                arslanLog(`Using WhatsApp Web version: ${waWebVersion.join('.')}`, 'info');
-            }
-        } catch (versionError) {
-            arslanLog(`Could not fetch WhatsApp Web version, using fallback: ${versionError.message}`, 'error');
-        }
 
         const conn = makeWASocket({
             auth: {
@@ -246,7 +249,7 @@ async function arslanPair(number, res = null) {
             },
             printQRInTerminal: false,
             logger: pino({ level: "silent" }),
-            version: waWebVersion,
+            ...(currentVersion ? { version: currentVersion } : {}),
             connectTimeoutMs: 60000,
             defaultQueryTimeoutMs: 0,
             keepAliveIntervalMs: 10000,
@@ -297,29 +300,8 @@ async function arslanPair(number, res = null) {
         if (!conn.authState.creds.registered) {
             arslanLog(`🔐 Starting NEW pairing process for ${sanitizedNumber}`, 'info');
             try {
-                // Wait until the WebSocket is ready so the pairing request is
-                // sent on an established WhatsApp connection instead of racing
-                // the initial handshake.
-                if (!conn.user) {
-                    await new Promise((resolve, reject) => {
-                        const timeout = setTimeout(() => {
-                            conn.ev.off('connection.update', onUpdate);
-                            reject(new Error('WhatsApp connection timed out before pairing'));
-                        }, 20000);
-                        const onUpdate = ({ connection, lastDisconnect }) => {
-                            if (connection === 'open') {
-                                clearTimeout(timeout);
-                                conn.ev.off('connection.update', onUpdate);
-                                resolve();
-                            } else if (connection === 'close') {
-                                clearTimeout(timeout);
-                                conn.ev.off('connection.update', onUpdate);
-                                reject(lastDisconnect?.error || new Error('WhatsApp connection closed before pairing'));
-                            }
-                        };
-                        conn.ev.on('connection.update', onUpdate);
-                    });
-                }
+                // Give the socket a moment to initialize before asking WhatsApp for a pairing code.
+                await delay(3000);
                 const code = await conn.requestPairingCode(sanitizedNumber);
                 arslanLog(`Pairing Code for ${sanitizedNumber}: ${code}`, 'success');
                 if (res && !res.headersSent) {
