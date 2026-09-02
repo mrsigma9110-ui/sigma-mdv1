@@ -1,0 +1,18 @@
+{
+  "name": "SIGMA MD PAIR",
+  "description": "SESSION ID GENERATOR FOR WHATSAPP BOTS",
+  "logo": "https://mhcloud.kesug.com/images/sigma-techx.png",
+  "repository": "https://github.com/ArslanMDofficial/Arslan-MD-Mini-V2",
+  "keywords": ["@SIGMA-MD"],
+  "success_url": "/", 
+  "buildpacks": [
+    { "url": "https://github.com/heroku/heroku-buildpack-nodejs#latest" }
+  ],
+  "env": {      
+    "MESSAGE": {
+      "description": "Msg Attached With Session ID",
+      "value": "🔰 BY || SIGMA-MD OFFICIAL 🔰",
+      "required": false 
+    }
+  }
+}
