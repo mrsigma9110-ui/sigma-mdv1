@@ -1,4 +1,4 @@
-const { cmd } = require('../arslan')
+const { cmd } = require('../sigma')
 const { fetchGif, gifToSticker } = require('../lib/sticker-utils')
 
 cmd({

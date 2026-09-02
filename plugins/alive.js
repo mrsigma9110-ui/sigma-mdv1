@@ -3,7 +3,7 @@ const moment = require("moment");
 const { fakevCard } = require('../lib/fakevCard');
 
 let botStartTime = Date.now(); // Recording the start time of the bot
-const ALIVE_IMG = "https://mhcloud.kesug.com/imag../arslan-techx.png"; // Make sure this URL is valid
+const ALIVE_IMG = "https://mhcloud.kesug.com/images/sigma-techx.png"; // Make sure this URL is valid
 
 cmd({
     pattern: "alive",

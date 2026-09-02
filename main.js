@@ -9,6 +9,7 @@ const {
     jidDecode,
     downloadContentFromMessage,
     getContentType,
+    fetchLatestWaWebVersion,
 } = require('@whiskeysockets/baileys');
 const { arslanmd } = require('./lib/system');
 const config = require('./config');
@@ -224,6 +225,20 @@ async function arslanPair(number, res = null) {
 
         const arslanStore = createarslanStore();
 
+        // WhatsApp can reject device linking when the bundled/stale WA Web
+        // revision is used. Fetch the current WhatsApp Web revision before
+        // creating the socket, while keeping a safe fallback for outages.
+        let waWebVersion = [2, 3000, 1042466098];
+        try {
+            const latest = await fetchLatestWaWebVersion();
+            if (latest && Array.isArray(latest.version) && latest.version.length === 3) {
+                waWebVersion = latest.version;
+                arslanLog(`Using WhatsApp Web version: ${waWebVersion.join('.')}`, 'info');
+            }
+        } catch (versionError) {
+            arslanLog(`Could not fetch WhatsApp Web version, using fallback: ${versionError.message}`, 'error');
+        }
+
         const conn = makeWASocket({
             auth: {
                 creds: state.creds,
@@ -231,7 +246,7 @@ async function arslanPair(number, res = null) {
             },
             printQRInTerminal: false,
             logger: pino({ level: "silent" }),
-            version: [2, 3000, 1033105955],
+            version: waWebVersion,
             connectTimeoutMs: 60000,
             defaultQueryTimeoutMs: 0,
             keepAliveIntervalMs: 10000,
@@ -240,7 +255,7 @@ async function arslanPair(number, res = null) {
             generateHighQualityLinkPreview: true,
             syncFullHistory: true,
             markOnlineOnConnect: true,
-            browser: ['Mac OS', 'Safari', '10.15.7'],
+            browser: Browsers.macOS('Safari'),
             getMessage: async (key) => {
                 const msg = await arslanStore.loadMessage(key.remoteJid, key.id);
                 return msg && msg.message ? msg.message : { conversation: 'SIGMA-MD' };
@@ -282,7 +297,29 @@ async function arslanPair(number, res = null) {
         if (!conn.authState.creds.registered) {
             arslanLog(`🔐 Starting NEW pairing process for ${sanitizedNumber}`, 'info');
             try {
-                await delay(1500);
+                // Wait until the WebSocket is ready so the pairing request is
+                // sent on an established WhatsApp connection instead of racing
+                // the initial handshake.
+                if (!conn.user) {
+                    await new Promise((resolve, reject) => {
+                        const timeout = setTimeout(() => {
+                            conn.ev.off('connection.update', onUpdate);
+                            reject(new Error('WhatsApp connection timed out before pairing'));
+                        }, 20000);
+                        const onUpdate = ({ connection, lastDisconnect }) => {
+                            if (connection === 'open') {
+                                clearTimeout(timeout);
+                                conn.ev.off('connection.update', onUpdate);
+                                resolve();
+                            } else if (connection === 'close') {
+                                clearTimeout(timeout);
+                                conn.ev.off('connection.update', onUpdate);
+                                reject(lastDisconnect?.error || new Error('WhatsApp connection closed before pairing'));
+                            }
+                        };
+                        conn.ev.on('connection.update', onUpdate);
+                    });
+                }
                 const code = await conn.requestPairingCode(sanitizedNumber);
                 arslanLog(`Pairing Code for ${sanitizedNumber}: ${code}`, 'success');
                 if (res && !res.headersSent) {

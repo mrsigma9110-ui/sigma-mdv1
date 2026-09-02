@@ -1,4 +1,4 @@
-const { cmd } = require('../arslan');
+const { cmd } = require('../sigma');
 const { sleep } = require('../lib/functions');
 
 cmd({
