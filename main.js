@@ -77,8 +77,9 @@ async function getCurrentBaileysVersion() {
     if (baileysVersion) return baileysVersion;
     try {
         const latest = await fetchLatestBaileysVersion();
-        if (latest && Array.isArray(latest.version)) {
-            baileysVersion = latest.version;
+        const version = Array.isArray(latest) ? latest : latest?.version;
+        if (Array.isArray(version)) {
+            baileysVersion = version;
             arslanLog(`Using latest WhatsApp Web version: ${baileysVersion.join('.')}`, 'info');
         }
     } catch (e) {
@@ -174,46 +175,82 @@ async function setupCallHandlers(socket, number) {
 
 function setupAutoRestart(socket, number) {
     let restartAttempts = 0;
-    const maxRestartAttempts = 3;
+    let reconnecting = false;
 
     socket.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
-        if (connection === 'close') {
-            const statusCode = lastDisconnect && lastDisconnect.error && lastDisconnect.error.output && lastDisconnect.error.output.statusCode;
-            const errorMessage = lastDisconnect && lastDisconnect.error && lastDisconnect.error.message;
-            arslanLog(`Connection closed for ${number}: ${statusCode} - ${errorMessage}`, 'warning');
-
-            if (statusCode === 401 || (errorMessage && errorMessage.includes('401'))) {
-                arslanLog(`Manual unlink detected for ${number}, cleaning up...`, 'warning');
-                const sanitizedNumber = number.replace(/[^0-9]/g, '');
-                activeSockets.delete(sanitizedNumber);
-                socketCreationTime.delete(sanitizedNumber);
-                await deleteSessionFromMongoDB(sanitizedNumber);
-                await removeNumberFromMongoDB(sanitizedNumber);
-                socket.ev.removeAllListeners();
-                return;
-            }
-
-            const isNormalError = statusCode === 408 || (errorMessage && errorMessage.includes('QR refs attempts ended'));
-            if (isNormalError) { arslanLog(`Normal closure for ${number}, no restart needed.`, 'info'); return; }
-
-            if (restartAttempts < maxRestartAttempts) {
-                restartAttempts++;
-                arslanLog(`Reconnecting ${number} (${restartAttempts}/${maxRestartAttempts}) in 10s...`, 'warning');
-                const sanitizedNumber = number.replace(/[^0-9]/g, '');
-                activeSockets.delete(sanitizedNumber);
-                socketCreationTime.delete(sanitizedNumber);
-                socket.ev.removeAllListeners();
-                await delay(10000);
-                try {
-                    const mockRes = { headersSent: false, send: () => {}, status: () => mockRes, setHeader: () => {}, json: () => {} };
-                    await arslanPair(number, mockRes);
-                } catch (e) { arslanLog(`Reconnection failed for ${number}: ${e.message}`, 'error'); }
-            } else {
-                arslanLog(`Max restart attempts reached for ${number}.`, 'error');
-            }
+        if (connection === 'open') {
+            restartAttempts = 0;
+            reconnecting = false;
+            return;
         }
-        if (connection === 'open') { restartAttempts = 0; }
+        if (connection !== 'close' || reconnecting) return;
+
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        const errorMessage = lastDisconnect?.error?.message || String(lastDisconnect?.error || '');
+        arslanLog(`Connection closed for ${number}: ${statusCode || 'unknown'} - ${errorMessage}`, 'warning');
+
+        const sanitizedNumber = number.replace(/[^0-9]/g, '');
+
+        // 401 means the WhatsApp device was actually logged out/unlinked.
+        if (statusCode === 401 || /401|logged.?out/i.test(errorMessage)) {
+            activeSockets.delete(sanitizedNumber);
+            socketCreationTime.delete(sanitizedNumber);
+            await deleteSessionFromMongoDB(sanitizedNumber);
+            await removeNumberFromMongoDB(sanitizedNumber);
+            try { socket.ev.removeAllListeners(); } catch (_) {}
+            arslanLog(`Manual unlink detected for ${number}; session cleared.`, 'warning');
+            return;
+        }
+
+        reconnecting = true;
+        restartAttempts++;
+        // Never give up on transient WhatsApp/Render network disconnects.
+        // Backoff is capped so a bad connection does not create a reconnect storm.
+        const waitMs = Math.min(30000, Math.max(5000, restartAttempts * 5000));
+        arslanLog(`Reconnecting ${number} (attempt ${restartAttempts}) in ${Math.round(waitMs / 1000)}s...`, 'warning');
+
+        activeSockets.delete(sanitizedNumber);
+        socketCreationTime.delete(sanitizedNumber);
+        try { socket.ev.removeAllListeners(); } catch (_) {}
+        await delay(waitMs);
+
+        try {
+            const mockRes = {
+                headersSent: false,
+                send: () => {},
+                json: () => {},
+                status: () => mockRes,
+                setHeader: () => {}
+            };
+            await arslanPair(number, mockRes);
+        } catch (e) {
+            arslanLog(`Reconnection failed for ${number}: ${e.message}`, 'error');
+        } finally {
+            reconnecting = false;
+        }
+    });
+}
+
+async function waitForPairingSocketReady(conn, timeoutMs = 20000) {
+    // requestPairingCode needs the WebSocket/auth state to be initialized.
+    // Calling it after a blind 3-second delay can race with the connection setup.
+    if (conn?.ws?.isOpen || conn?.ws?.readyState === 1) return;
+
+    await new Promise((resolve) => {
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            try { conn.ev.off('connection.update', onUpdate); } catch (_) {}
+            resolve();
+        };
+        const onUpdate = ({ connection, qr }) => {
+            if (qr || connection === 'open' || conn?.ws?.isOpen || conn?.ws?.readyState === 1) finish();
+        };
+        const timer = setTimeout(finish, timeoutMs);
+        conn.ev.on('connection.update', onUpdate);
     });
 }
 
@@ -278,7 +315,7 @@ async function arslanPair(number, res = null) {
             generateHighQualityLinkPreview: true,
             syncFullHistory: true,
             markOnlineOnConnect: true,
-            browser: Browsers.macOS('Safari'),
+            browser: Browsers.macOS('Desktop'),
             getMessage: async (key) => {
                 const msg = await arslanStore.loadMessage(key.remoteJid, key.id);
                 return msg && msg.message ? msg.message : { conversation: 'SIGMA-MD' };
@@ -320,8 +357,8 @@ async function arslanPair(number, res = null) {
         if (!conn.authState.creds.registered) {
             arslanLog(`🔐 Starting NEW pairing process for ${sanitizedNumber}`, 'info');
             try {
-                // Give the socket a moment to initialize before asking WhatsApp for a pairing code.
-                await delay(3000);
+                // Wait for the socket instead of racing requestPairingCode against WebSocket setup.
+                await waitForPairingSocketReady(conn, 20000);
                 const code = await conn.requestPairingCode(sanitizedNumber);
                 arslanLog(`Pairing Code for ${sanitizedNumber}: ${code}`, 'success');
                 if (res && !res.headersSent) {
@@ -516,6 +553,10 @@ async function arslanPair(number, res = null) {
         if (connectionLockKey) global[connectionLockKey] = false;
     }
 }
+
+// Expose the local pairing service to the .pair/.pair2 plugins.
+global.__sigmaPair = arslanPair;
+
 
 
 router.get('/', (req, res) => res.sendFile(path.join(__dirname, 'pair.html')));

@@ -1,98 +1,115 @@
-const { cmd, commands } = require('../arslan');
-const axios = require('axios');
+const { cmd } = require('../arslan');
+
+/**
+ * SIGMA-MD local pairing commands.
+ * .pair 923xxxxxxxxx
+ * .pair2 923xxxxxxxxx
+ *
+ * Uses the bot's own Baileys socket instead of an external pairing API.
+ * This is faster and avoids the old Heroku/API fetch failures.
+ */
+
+function cleanNumber(input) {
+    return String(input || '')
+        .trim()
+        .replace(/[^0-9]/g, '')
+        .replace(/^0+/, '');
+}
+
+async function getLocalPairCode(number) {
+    const pairFn = global.__sigmaPair;
+    if (typeof pairFn !== 'function') {
+        throw new Error('Pairing service is not ready. Please try again in a few seconds.');
+    }
+
+    let result;
+    const response = {
+        headersSent: false,
+        send(data) {
+            this.headersSent = true;
+            result = data;
+            return data;
+        },
+        json(data) {
+            this.headersSent = true;
+            result = data;
+            return data;
+        },
+        status(code) {
+            this.statusCode = code;
+            return this;
+        },
+        setHeader() {}
+    };
+
+    await pairFn(number, response);
+
+    if (result?.code) return result.code;
+    if (result?.status === 'already_connected') {
+        throw new Error('This number is already connected to the bot.');
+    }
+    if (result?.status === 'connection_in_progress') {
+        throw new Error('Pairing for this number is already in progress. Please wait.');
+    }
+    throw new Error(result?.message || result?.error || 'Could not generate pairing code.');
+}
+
+async function handlePair(conn, mek, m, { q, senderNumber, reply }) {
+    try {
+        const raw = q || senderNumber || '';
+        const phoneNumber = cleanNumber(raw);
+
+        if (!phoneNumber || phoneNumber.length < 10 || phoneNumber.length > 15) {
+            return await reply('❌ *Invalid number!*\n\nUse:\n.pair 923xxxxxxxxx\n\n+, spaces and - are allowed.');
+        }
+
+        if (typeof conn?.sendMessage === 'function') {
+            try { await conn.sendMessage(mek.key.remoteJid, { react: { text: '⏳', key: mek.key } }); } catch (_) {}
+        }
+
+        const code = await getLocalPairCode(phoneNumber);
+
+        await reply(
+            `╭━━〔 🔐 *SIGMA-MD PAIRING* 〕━━╮
+│
+│ 📱 Number: *+${phoneNumber}*
+│ 🔑 Code: *${code}*
+│
+╰━━━━━━━━━━━━━━━━━━━━━━╯
+
+*WhatsApp → Linked devices → Link a device → Link with phone number instead*
+
+Enter the code above on WhatsApp to connect this number to SIGMA-MD. ⚡`
+        );
+
+        // Send the clean code separately for easy copy on mobile.
+        await reply(String(code));
+
+        if (typeof conn?.sendMessage === 'function') {
+            try { await conn.sendMessage(mek.key.remoteJid, { react: { text: '✅', key: mek.key } }); } catch (_) {}
+        }
+    } catch (error) {
+        console.error('[SIGMA-MD] Pair command error:', error);
+        await reply('❌ *Pairing failed:* ' + (error.message || 'Unknown error') + '\n\nPlease try .pair again after a few seconds.');
+    }
+}
 
 cmd({
-    pattern: "pair",
-    alias: ["getpaijsksnsr", "pairing", "clonebnsjdndnznot"],
-    react: "✅",
-    desc: "Get pairing code for ꜱɪɢᴍᴀ-ᴍᴅ bot",
-    category: "download",
-    use: ".pair 92323***",
+    pattern: 'pair',
+    alias: ['pairing', 'getpair', 'getpairing'],
+    react: '🔐',
+    desc: 'Generate a WhatsApp pairing code',
+    category: 'owner',
+    use: '.pair 923xxxxxxxxx',
     filename: __filename
-}, async (conn, mek, m, { from, quoted, body, isCmd, command, args, q, isGroup, senderNumber, reply }) => {
-    try {
-        // Extract phone number from command
-        const phoneNumber = q ? q.trim().replace(/[^0-9]/g, '') : senderNumber.replace(/[^0-9]/g, '');
-
-        // Validate phone number format
-        if (!phoneNumber || phoneNumber.length < 10 || phoneNumber.length > 15) {
-            return await reply("❌ Please provide a valid phone number without `+`\nExample: `.pair 92323***`");
-        }
-
-        // Make API request to get pairing code
-        const response = await axios.get(`https://arslan-mini-bot-e4ec84c138eb.herokuapp.com/code?number=${encodeURIComponent(phoneNumber)}`);
-
-        if (!response.data || !response.data.code) {
-            return await reply("❌ Failed to retrieve pairing code. Please try again later.");
-        }
-
-        const pairingCode = response.data.code;
-        const doneMessage = "> *PAIRING COMPLETED*";
-
-        // Send initial message with formatting
-        await reply(`${doneMessage}\n\n*Your pairing code is:* ${pairingCode}`);
-
-        // Optional 2-second delay
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-        // Send clean code again
-        await reply(`${pairingCode}`);
-
-    } catch (error) {
-        console.error("Pair command error:", error);
-        await reply("❌ An error occurred while getting pairing code. Please try again later.");
-    }
-});
+}, handlePair);
 
 cmd({
-    pattern: "pair2",
-    alias: ["getpair2", "reqpair", "clonebot2"],
-    react: "📉",
-    desc: "Get pairing code for ꜱɪɢᴍᴀ-ᴍᴅ bot",
-    category: "download",
-    use: ".pair 92323XXX",
+    pattern: 'pair2',
+    alias: ['getpair2', 'reqpair', 'clonebot2'],
+    react: '🔐',
+    desc: 'Generate a WhatsApp pairing code (alternate)',
+    category: 'owner',
+    use: '.pair2 923xxxxxxxxx',
     filename: __filename
-}, async (conn, mek, m, { from, quoted, body, isCmd, command, args, q, isGroup, senderNumber, reply }) => {
-    try {
-        // Check if in group
-        if (isGroup) {
-            return await reply("❌ This command only works in private chat. Please message me directly.");
-        }
-
-        // Show processing reaction
-        await conn.sendMessage(from, { react: { text: "⏳", key: mek.key } });
-
-        // Extract phone number
-        const phoneNumber = q ? q.trim().replace(/[^0-9]/g, '') : senderNumber.replace(/[^0-9]/g, '');
-
-        // Validate phone number
-        if (!phoneNumber || phoneNumber.length < 10 || phoneNumber.length > 15) {
-            return await reply("❌ Invalid phone number format!\n\nPlease use: `.pair 92323000000000`\n(Without + sign)");
-        }
-
-        // Get pairing code from API
-        const response = await axios.get(`https://arslan-mini-bot-e4ec84c138eb.herokuapp.com/code?number=${encodeURIComponent(phoneNumber)}`);
-        
-        if (!response.data?.code) {
-            return await reply("❌ Failed to get pairing code. Please try again later.");
-        }
-
-        const pairingCode = response.data.code;
-        
-        // Send image with caption
-        const sentMessage = await conn.sendMessage(from, {
-            image: { url: "https://files.catbox.moe/prkkzj.png" },
-            caption: `- *⍴ᥲіrіᥒg ᥴ᥆ძᥱ*\n\n Notification has been sent to your WhatsApp. Please check your phone and copy this code to pair it and get your session id.\n\n*🔢 Pairing Code*: *${pairingCode}*\n\n> *Copy it from below message 👇🏻*`
-        }, { quoted: m });
-
-        // Send clean code separately
-        await reply(pairingCode);
-        
-        // Add ✅ reaction to the clean code message
-        await conn.sendMessage(from, { react: { text: "✅", key: mek.key } });
-
-    } catch (error) {
-        console.error("Pair command error:", error);
-        await reply("❌ An error occurred. Please try again later.");
-    }
-});
+}, handlePair);
