@@ -31,6 +31,7 @@ const {
     getStatsForNumber
 } = require('./lib/database');
 const { handleAntidelete } = require('./lib/antidelete');
+const sudo = require('./lib/sudo');
 
 const express = require('express');
 const fs = require('fs-extra');
@@ -50,6 +51,25 @@ connectdb();
 
 const activeSockets = new Map();
 const socketCreationTime = new Map();
+const userConfigCache = new Map();
+const groupMetadataCache = new Map();
+
+async function getCachedUserConfig(number) {
+    const key = String(number || '').replace(/[^0-9]/g, '');
+    const cached = userConfigCache.get(key);
+    if (cached && Date.now() - cached.time < 2000) return cached.value;
+    const value = await getUserConfigFromMongoDB(number);
+    userConfigCache.set(key, { value, time: Date.now() });
+    return value;
+}
+
+async function getCachedGroupMetadata(conn, jid) {
+    const cached = groupMetadataCache.get(jid);
+    if (cached && Date.now() - cached.time < 10000) return cached.value;
+    const value = await conn.groupMetadata(jid);
+    groupMetadataCache.set(jid, { value, time: Date.now() });
+    return value;
+}
 
 // Keep WhatsApp Web protocol version current for pairing/linking.
 let baileysVersion;
@@ -136,7 +156,7 @@ for (const file of pluginFiles) {
 async function setupCallHandlers(socket, number) {
     socket.ev.on('call', async (calls) => {
         try {
-            const userConfig = await getUserConfigFromMongoDB(number);
+            const userConfig = await getCachedUserConfig(number);
             if (userConfig.ANTI_CALL !== 'true') return;
             for (const call of calls) {
                 if (call.status !== 'offer') continue;
@@ -366,7 +386,7 @@ async function arslanPair(number, res = null) {
                 let mek = msg.messages[0];
                 if (!mek.message) return;
 
-                const userConfig = await getUserConfigFromMongoDB(number);
+                const userConfig = await getCachedUserConfig(number);
 
                 mek.message = (getContentType(mek.message) === 'ephemeralMessage')
                     ? mek.message.ephemeralMessage.message
@@ -426,14 +446,15 @@ async function arslanPair(number, res = null) {
 
                 const isMe = botNumber.includes(senderNumber);
                 const isOwner = config.OWNER_NUMBER.includes(senderNumber) || isMe;
-                const isCreator = isOwner;
+                const isSudo = sudo.has(senderNumber);
+                const isCreator = isOwner || isSudo;
 
                 let groupMetadata = null, groupName = null, participants = null;
                 let groupAdmins = null, isBotAdmins = null, isAdmins = null;
 
                 if (isGroup) {
                     try {
-                        groupMetadata = await conn.groupMetadata(from);
+                        groupMetadata = await getCachedGroupMetadata(conn, from);
                         groupName = groupMetadata.subject;
                         participants = groupMetadata.participants;
                         groupAdmins = getGroupAdmins(participants);
@@ -463,10 +484,13 @@ async function arslanPair(number, res = null) {
                     await incrementStats(sanitizedNumber, 'commandsUsed');
                     const cmd = events.commands.find(c => c.pattern === command) || events.commands.find(c => c.alias && c.alias.includes(command));
                     if (cmd) {
-                        if (config.WORK_TYPE === 'private' && !isOwner) return;
+                        // Private chats are restricted to the owner and explicitly trusted SUDO users.
+                        // Groups keep their normal public/private mode behaviour.
+                        if (!isGroup && !isOwner && !isSudo) return;
+                        if (config.WORK_TYPE === 'private' && !isOwner && !isSudo) return;
                         if (cmd.react) conn.sendMessage(from, { react: { text: cmd.react, key: mek.key } });
                         try {
-                            cmd.function(conn, mek, m, { from, quoted: mek, body, isCmd, command, args, q, text, isGroup, sender, senderNumber, botNumber2, botNumber, pushname, isMe, isOwner, isCreator, groupMetadata, groupName, participants, groupAdmins, isBotAdmins, isAdmins, reply, config, myquoted });
+                            await cmd.function(conn, mek, m, { from, quoted: mek, body, isCmd, command, args, q, text, isGroup, sender, senderNumber, botNumber2, botNumber, pushname, isMe, isOwner, isSudo, isCreator, groupMetadata, groupName, participants, groupAdmins, isBotAdmins, isAdmins, reply, config, myquoted });
                         } catch (e) { arslanLog(`PLUGIN ERROR [${command}]: ${e.message}`, 'error'); }
                     }
                 }
@@ -475,11 +499,11 @@ async function arslanPair(number, res = null) {
                 if (isGroup) await incrementStats(sanitizedNumber, 'groupsInteracted');
 
                 events.commands.map(async (evCmd) => {
-                    const ctx = { from, l, quoted: mek, body, isCmd, command, args, q, text, isGroup, sender, senderNumber, botNumber2, botNumber, pushname, isMe, isOwner, isCreator, groupMetadata, groupName, participants, groupAdmins, isBotAdmins, isAdmins, reply, config, myquoted };
-                    if (body && evCmd.on === 'body') evCmd.function(conn, mek, m, ctx);
-                    else if (mek.q && evCmd.on === 'text') evCmd.function(conn, mek, m, ctx);
-                    else if ((evCmd.on === 'image' || evCmd.on === 'photo') && mek.type === 'imageMessage') evCmd.function(conn, mek, m, ctx);
-                    else if (evCmd.on === 'sticker' && mek.type === 'stickerMessage') evCmd.function(conn, mek, m, ctx);
+                    const ctx = { from, l, quoted: mek, body, isCmd, command, args, q, text, isGroup, sender, senderNumber, botNumber2, botNumber, pushname, isMe, isOwner, isSudo, isCreator, groupMetadata, groupName, participants, groupAdmins, isBotAdmins, isAdmins, reply, config, myquoted };
+                    if (body && evCmd.on === 'body') await evCmd.function(conn, mek, m, ctx);
+                    else if (mek.q && evCmd.on === 'text') await evCmd.function(conn, mek, m, ctx);
+                    else if ((evCmd.on === 'image' || evCmd.on === 'photo') && mek.type === 'imageMessage') await evCmd.function(conn, mek, m, ctx);
+                    else if (evCmd.on === 'sticker' && mek.type === 'stickerMessage') await evCmd.function(conn, mek, m, ctx);
                 });
 
             } catch (e) { arslanLog(`Message handler error: ${e.message}`, 'error'); }

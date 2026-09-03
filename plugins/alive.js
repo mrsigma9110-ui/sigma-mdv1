@@ -1,74 +1,44 @@
-const { cmd } = require("../arslan");
-const moment = require("moment");
-const { fakevCard } = require('../lib/fakevCard');
+const { cmd, commands } = require('../arslan');
+const os = require('os');
+const config = require('../config');
 
-let botStartTime = Date.now(); // Recording the start time of the bot
-const ALIVE_IMG = "https://mhcloud.kesug.com/images/sigma-techx.png"; // Make sure this URL is valid
+function uptime() {
+  const sec = Math.floor(process.uptime());
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  return `${h}h ${m}m ${s}s`;
+}
 
 cmd({
-    pattern: "alive",
-    desc: "Check if the bot is active.",
-    category: "owner",
-    react: "💡",
-    filename: __filename
-}, async (conn, mek, m, { reply, from }) => {
-    try {
-        const pushname = m.pushName || "User"; // Username or default value
-        const currentTime = moment().format("HH:mm:ss");
-        const currentDate = moment().format("dddd, MMMM Do YYYY");
+  pattern: 'alive',
+  alias: ['status', 'live'],
+  desc: 'Check uptime and system status',
+  category: 'main',
+  react: '👑',
+  filename: __filename
+}, async (conn, mek, m, { from, sender, reply }) => {
+  const mem = Math.round(process.memoryUsage().rss / 1024 / 1024);
+  const text = `*╭─❍══ ⃟ 𝙎𝙄𝙂𝙈𝘼-𝙈𝘿 𝙈𝙄𝙉𝙄 ⃟══❍*
+*┇*✾┋ STATUS: *ONLINE* 🟢
+*┇*✾┋ UPTIME: *${uptime()}*
+*┇*✾┋ MEMORY: *${mem} MB*
+*┇*✾┋ COMMANDS: *${commands.length}*
+*┇*✾┋ MODE: *${config.WORK_TYPE || 'public'}*
+*┇*✾┋ PREFIX: *${config.PREFIX || '.'}*
+*╰═══════════════════⍟*
 
-        const runtimeMilliseconds = Date.now() - botStartTime;
-        const runtimeSeconds = Math.floor((runtimeMilliseconds / 1000) % 60);
-        const runtimeMinutes = Math.floor((runtimeMilliseconds / (1000 * 60)) % 60);
-        const runtimeHours = Math.floor(runtimeMilliseconds / (1000 * 60 * 60));
+*SIGMA-MD is Alive & Ready* ⚡`;
 
-        const formattedInfo = `
-╭┄┄┄┄[ *ꜱɪɢᴍᴀ-ᴍᴅ sᴛᴀᴛᴜs* ]┄┄┄┄
-┊
-┊     Hi 🫵🏽 ${pushname}
-┊
-┊🕒 *ᴛɪᴍᴇ*: ${currentTime}
-┊📅 *ᴅᴀᴛᴇ*: ${currentDate}
-┊⏳ *ᴜᴘᴛɪᴍᴇ*: ${runtimeHours} hours, ${runtimeMinutes} minutes, ${runtimeSeconds} seconds
-╰───────────────
-
-> 🤖 *Status*: *ꜱɪɢᴍᴀ-MD-Mini is Alive and Ready!*
-
-🎉 *Enjoy the Service!*
-        `.trim();
-
-        // Check if the image is defined
-        if (!ALIVE_IMG || !ALIVE_IMG.startsWith("http")) {
-            throw new Error("Invalid ALIVE_IMG URL. Please set a valid image URL.");
-        }
-
-        // Send the message with image and caption
-        await conn.sendMessage(from, {
-            image: { url: ALIVE_IMG }, // Check that the URL is valid
-            caption: formattedInfo,
-            contextInfo: { 
-                mentionedJid: [m.sender],
-                forwardingScore: 999,
-                isForwarded: true,
-                forwardedNewsletterMessageInfo: {
-                    newsletterJid: '120363425323587529@newsletter',
-                    newsletterName: 'ꜱɪɢᴍᴀ-ᴍᴅ',
-                    serverMessageId: 143
-                }
-            }
-        }, { quoted: fakevCard });
-
-    } catch (error) {
-        console.error("Error in alive command: ", error);
-        
-        // Respond with error details 
-        const errorMessage = `
-❌ An error occurred while processing the alive command.
-🛠 *Error Details*:
-${error.message}
-
-Please report this issue or try again later.
-        `.trim();
-        return reply(errorMessage);
-    }
+  try {
+    await conn.sendMessage(from, {
+      text,
+      contextInfo: {
+        mentionedJid: sender ? [sender] : []
+      }
+    }, { quoted: mek });
+  } catch (e) {
+    console.error('Alive send error:', e.message);
+    await reply(text);
+  }
 });
