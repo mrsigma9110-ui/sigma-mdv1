@@ -46,6 +46,7 @@ const prefix = config.PREFIX;
 const mode = config.MODE || config.WORK_TYPE;
 const router = express.Router();
 
+const instanceId = String(config.INSTANCE_ID || 'SIGMA_MD_DEFAULT');
 
 connectdb();
 
@@ -147,7 +148,7 @@ function arslanLog(message, type = 'info') {
 const pluginsDir = path.join(__dirname, 'plugins');
 if (!fs.existsSync(pluginsDir)) fs.mkdirSync(pluginsDir, { recursive: true });
 const pluginFiles = fs.readdirSync(pluginsDir).filter(f => f.endsWith('.js'));
-arslanLog(`Loading ${pluginFiles.length} plugins...`, 'info');
+arslanLog(`Loading ${pluginFiles.length} plugins for instance ${instanceId}...`, 'info');
 for (const file of pluginFiles) {
     try { require(path.join(pluginsDir, file)); }
     catch (e) { arslanLog(`Failed to load plugin ${file}: ${e.message}`, 'error'); }
@@ -255,12 +256,32 @@ async function waitForPairingSocketReady(conn, timeoutMs = 20000) {
 }
 
 
+async function requestPairingCodeWithRetry(conn, sanitizedNumber, attempts = 3) {
+    let lastError;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+        try {
+            await waitForPairingSocketReady(conn, 20000);
+            if (!conn?.authState?.creds || conn.authState.creds.registered) {
+                throw new Error('Pairing session is not ready.');
+            }
+            const code = await conn.requestPairingCode(sanitizedNumber);
+            if (code) return code;
+            throw new Error('WhatsApp did not return a pairing code.');
+        } catch (err) {
+            lastError = err;
+            arslanLog(`Pairing request attempt ${attempt}/${attempts} failed for ${sanitizedNumber}: ${err.message}`, 'warning');
+            if (attempt < attempts) await delay(1500 * attempt);
+        }
+    }
+    throw lastError || new Error('Failed to request pairing code.');
+}
+
 async function arslanPair(number, res = null) {
     let connectionLockKey;
     const sanitizedNumber = number.replace(/[^0-9]/g, '');
 
     try {
-        const sessionPath = path.join(__dirname, 'session', `session_${sanitizedNumber}`);
+        const sessionPath = path.join(__dirname, 'session', instanceId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80), `session_${sanitizedNumber}`);
 
         if (isNumberAlreadyConnected(sanitizedNumber)) {
             const status = getConnectionStatus(sanitizedNumber);
@@ -357,9 +378,8 @@ async function arslanPair(number, res = null) {
         if (!conn.authState.creds.registered) {
             arslanLog(`🔐 Starting NEW pairing process for ${sanitizedNumber}`, 'info');
             try {
-                // Wait for the socket instead of racing requestPairingCode against WebSocket setup.
-                await waitForPairingSocketReady(conn, 20000);
-                const code = await conn.requestPairingCode(sanitizedNumber);
+                // Wait for WhatsApp auth/socket readiness and retry transient races.
+                const code = await requestPairingCodeWithRetry(conn, sanitizedNumber, 3);
                 arslanLog(`Pairing Code for ${sanitizedNumber}: ${code}`, 'success');
                 if (res && !res.headersSent) {
                     res.send({ code, status: 'new_pairing' });
@@ -401,7 +421,7 @@ async function arslanPair(number, res = null) {
             const { connection, lastDisconnect } = update;
             if (connection === 'open') {
                 await arslanmd(conn);
-                arslanLog(`Connected: ${sanitizedNumber}`, 'success');
+                arslanLog(`Connected: ${sanitizedNumber} [instance=${instanceId}]`, 'success');
                 const userJid = jidNormalizedUser(conn.user.id);
                 await addNumberToMongoDB(sanitizedNumber);
                 if (!existingSession) {
@@ -560,7 +580,7 @@ global.__sigmaPair = arslanPair;
 
 
 router.get('/', (req, res) => res.sendFile(path.join(__dirname, 'pair.html')));
-router.get('/code', async (req, res) => { if (!req.query.number) return res.json({ error: 'Number required' }); await arslanPair(req.query.number, res); });
+router.get('/code', async (req, res) => { if (!req.query.number) return res.status(400).json({ error: 'Number required', message: 'WhatsApp number is required.' }); try { await arslanPair(req.query.number, res); } catch (e) { if (!res.headersSent) res.status(503).json({ error: 'PAIRING_UNAVAILABLE', message: e.message || 'Pairing service temporarily unavailable. Please try again.' }); } });
 router.get('/status', async (req, res) => {
     const { number } = req.query;
     if (!number) {

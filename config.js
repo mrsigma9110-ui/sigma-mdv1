@@ -9,7 +9,11 @@ module.exports = {
     // ===========================================================
     // 1. CONFIGURATION DE BASE (Session & Database)
     // ===========================================================
-    SESSION_ID: process.env.SESSION_ID || "MINI BOT", 
+    SESSION_ID: process.env.SESSION_ID || "MINI BOT",
+    // Unique database namespace for this bot deployment. On Render, RENDER_SERVICE_ID
+    // keeps cloned bots from ever sharing sessions/numbers with this bot.
+    INSTANCE_ID: process.env.INSTANCE_ID || process.env.RENDER_SERVICE_ID || process.env.RENDER_SERVICE_NAME ||
+        (process.env.OWNER_NUMBER ? `OWNER_${process.env.OWNER_NUMBER.replace(/[^0-9]/g, '')}` : 'SIGMA_MD_DEFAULT'),
     MONGODB_URI: process.env.MONGODB_URI || 'mongodb+srv://offarslan_db_user:arslanmd@cluster0.xrqkzwg.mongodb.net/?appName=Cluster0',
     
     // ===========================================================
