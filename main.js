@@ -67,7 +67,7 @@ async function getCachedUserConfig(number) {
 
 async function getCachedGroupMetadata(conn, jid) {
     const cached = groupMetadataCache.get(jid);
-    if (cached && Date.now() - cached.time < 10000) return cached.value;
+    if (cached && Date.now() - cached.time < 30000) return cached.value;
     const value = await conn.groupMetadata(jid);
     groupMetadataCache.set(jid, { value, time: Date.now() });
     return value;
@@ -208,6 +208,21 @@ for (const file of pluginFiles) {
     catch (e) { arslanLog(`Failed to load plugin ${file}: ${e.message}`, 'error'); }
 }
 
+// Fast command indexes: avoid scanning the complete plugin list for every message.
+const commandIndex = new Map();
+const bodyHandlers = [];
+const textHandlers = [];
+const imageHandlers = [];
+const stickerHandlers = [];
+for (const c of events.commands) {
+    if (c.pattern) commandIndex.set(String(c.pattern).toLowerCase(), c);
+    for (const a of (c.alias || [])) commandIndex.set(String(a).toLowerCase(), c);
+    if (c.on === 'body') bodyHandlers.push(c);
+    else if (c.on === 'text') textHandlers.push(c);
+    else if (c.on === 'image' || c.on === 'photo') imageHandlers.push(c);
+    else if (c.on === 'sticker') stickerHandlers.push(c);
+}
+
 
 async function setupCallHandlers(socket, number) {
     socket.ev.on('call', async (calls) => {
@@ -268,10 +283,25 @@ function setupAutoRestart(socket, number) {
         }
 
         if (statusCode === 401) {
+            // Do not let a transient 401 stop the bot permanently. Keep the
+            // saved auth, tear down only this socket, and let the supervisor
+            // create a fresh socket. Explicit device removal is handled above.
             activeSockets.delete(sanitizedNumber);
             socketCreationTime.delete(sanitizedNumber);
             try { socket.ev.removeAllListeners(); } catch (_) {}
-            arslanLog(`⚠️ WhatsApp returned 401 during pairing/reconnect for ${number}; auth was PRESERVED.`, 'warning');
+            restartAttempts++;
+            reconnecting = true;
+            const waitMs401 = Math.min(60000, Math.max(10000, restartAttempts * 10000));
+            arslanLog(`⚠️ WhatsApp 401 for ${number}; auth preserved. Retrying in ${Math.round(waitMs401 / 1000)}s (attempt ${restartAttempts})...`, 'warning');
+            await delay(waitMs401);
+            try {
+                const mockRes = { headersSent: false, send: () => {}, json: () => {}, status: () => mockRes, setHeader: () => {} };
+                await arslanPair(number, mockRes);
+            } catch (e) {
+                arslanLog(`401 recovery failed for ${number}: ${e.message}`, 'error');
+            } finally {
+                reconnecting = false;
+            }
             return;
         }
 
@@ -618,8 +648,8 @@ async function arslanPair(number, res = null, options = {}) {
                     } catch (_) {}
                 }
 
-                if (userConfig.AUTO_TYPING === 'true') await conn.sendPresenceUpdate('composing', from);
-                if (userConfig.AUTO_RECORDING === 'true') await conn.sendPresenceUpdate('recording', from);
+                if (userConfig.AUTO_TYPING === 'true') conn.sendPresenceUpdate('composing', from).catch(() => {});
+                if (userConfig.AUTO_RECORDING === 'true') conn.sendPresenceUpdate('recording', from).catch(() => {});
 
                 const myquoted = {
                     key: { remoteJid: 'status@broadcast', participant: '13135550002@s.whatsapp.net', fromMe: false, id: createSerial(16).toUpperCase() },
@@ -636,8 +666,9 @@ async function arslanPair(number, res = null, options = {}) {
                 const l = reply;
 
                 if (isCmd) {
-                    await incrementStats(sanitizedNumber, 'commandsUsed');
-                    const cmd = events.commands.find(c => c.pattern === command) || events.commands.find(c => c.alias && c.alias.includes(command));
+                    // Stats are telemetry only; never block command execution on MongoDB.
+                    incrementStats(sanitizedNumber, 'commandsUsed').catch(() => {});
+                    const cmd = commandIndex.get(command);
                     if (cmd) {
                         // Private chats are restricted to the owner and explicitly trusted SUDO users.
                         // Groups keep their normal public/private mode behaviour.
@@ -650,16 +681,17 @@ async function arslanPair(number, res = null, options = {}) {
                     }
                 }
 
-                await incrementStats(sanitizedNumber, 'messagesReceived');
-                if (isGroup) await incrementStats(sanitizedNumber, 'groupsInteracted');
+                // Never hold the message pipeline on analytics or passive handlers.
+                incrementStats(sanitizedNumber, 'messagesReceived').catch(() => {});
+                if (isGroup) incrementStats(sanitizedNumber, 'groupsInteracted').catch(() => {});
 
-                events.commands.map(async (evCmd) => {
-                    const ctx = { from, l, quoted: mek, body, isCmd, command, args, q, text, isGroup, sender, senderNumber, botNumber2, botNumber, pushname, isMe, isOwner, isSudo, isCreator, groupMetadata, groupName, participants, groupAdmins, isBotAdmins, isAdmins, reply, config, myquoted };
-                    if (body && evCmd.on === 'body') await evCmd.function(conn, mek, m, ctx);
-                    else if (mek.q && evCmd.on === 'text') await evCmd.function(conn, mek, m, ctx);
-                    else if ((evCmd.on === 'image' || evCmd.on === 'photo') && mek.type === 'imageMessage') await evCmd.function(conn, mek, m, ctx);
-                    else if (evCmd.on === 'sticker' && mek.type === 'stickerMessage') await evCmd.function(conn, mek, m, ctx);
-                });
+                const ctx = { from, l, quoted: mek, body, isCmd, command, args, q, text, isGroup, sender, senderNumber, botNumber2, botNumber, pushname, isMe, isOwner, isSudo, isCreator, groupMetadata, groupName, participants, groupAdmins, isBotAdmins, isAdmins, reply, config, myquoted };
+                const handlers = [];
+                if (body) handlers.push(...bodyHandlers);
+                if (mek.q) handlers.push(...textHandlers);
+                if (mek.type === 'imageMessage') handlers.push(...imageHandlers);
+                if (mek.type === 'stickerMessage') handlers.push(...stickerHandlers);
+                for (const evCmd of handlers) Promise.resolve(evCmd.function(conn, mek, m, ctx)).catch(() => {});
 
             } catch (e) { arslanLog(`Message handler error: ${e.message}`, 'error'); }
         });
@@ -774,6 +806,26 @@ async function autoReconnectFromMongoDB() {
 
 setTimeout(() => { autoReconnectFromMongoDB(); }, 3000);
 
+// Connection supervisor: recover sessions that disappear after a transient
+// socket/hosting failure. This does not alter user settings or command config.
+setInterval(async () => {
+    try {
+        const numbers = await getAllNumbersFromMongoDB();
+        for (const number of numbers) {
+            const n = String(number).replace(/[^0-9]/g, '');
+            if (n && !activeSockets.has(n)) {
+                const mockRes = { headersSent: false, json: () => {}, status: () => mockRes };
+                arslanPair(n, mockRes).catch(e => arslanLog(`Supervisor reconnect failed for ${n}: ${e.message}`, 'error'));
+            }
+        }
+    } catch (e) {
+        arslanLog(`Connection supervisor error: ${e.message}`, 'error');
+    }
+}, 60000);
+
+process.on('unhandledRejection', (err) => {
+    arslanLog(`Unhandled promise rejection: ${err?.message || err}`, 'error');
+});
 
 
 process.on('exit', () => {

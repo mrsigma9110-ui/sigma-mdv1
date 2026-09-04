@@ -87,27 +87,29 @@ cmd({
 },
 async(conn, mek, m, { args, isOwner, reply, botNumber, config }) => {
     if (!isOwner) return reply("*YEH COMMAND SIRF MERE LIE HAI 😎*");
-    const value = args[0]?.toLowerCase();
-    
+    const value = String(args?.[0] || '').toLowerCase();
+
     if (value === 'on' || value === 'true') {
-        config.WELCOME = 'true';
+        config.WELCOME_ENABLE = 'true';
         try {
-            await updateUserConfig(botNumber, { ...config, WELCOME: 'true' });
+            await updateUserConfig(botNumber, { ...config, WELCOME_ENABLE: 'true' });
         } catch (e) {
             console.error('WELCOME ON save error:', e);
         }
-        return;
-    } else if (value === 'off' || value === 'false') {
-        config.WELCOME = 'false';
+        return reply('✅ *WELCOME ON*');
+    }
+
+    if (value === 'off' || value === 'false') {
+        config.WELCOME_ENABLE = 'false';
         try {
-            await updateUserConfig(botNumber, { ...config, WELCOME: 'false' });
+            await updateUserConfig(botNumber, { ...config, WELCOME_ENABLE: 'false' });
         } catch (e) {
             console.error('WELCOME OFF save error:', e);
         }
-        return;
-    } else {
-        return;
+        return reply('❌ *WELCOME OFF*');
     }
+
+    return reply(`*WELCOME:* ${config.WELCOME_ENABLE || 'false'}\n*USE:* .welcome on/off`);
 });
 
 cmd({
@@ -118,15 +120,29 @@ cmd({
 },
 async(conn, mek, m, { args, isOwner, reply, botNumber, config }) => {
     if (!isOwner) return reply("*YEH COMMAND SIRF MERE LIE HAI 😎*");
-    const value = args[0]?.toLowerCase();
-    
+    const value = String(args?.[0] || '').toLowerCase();
+
     if (value === 'on' || value === 'true') {
-        await updateConfig('GOODBYE', 'true', botNumber, config, reply);
-    } else if (value === 'off' || value === 'false') {
-        await updateConfig('GOODBYE', 'false', botNumber, config, reply);
-    } else {
-        reply(`*ABHI :❯ ${config.GOODBYE} HAI 😊*\n\n*JO MEMBER GROUP LEFT KARE GA USKA GOODBYE MSG BHEJ DYA JAYE GA 😃 YEH SETTING ON KARNE K LIE LIKHO ☺️*\n*👑 ❮GOODBYE ON❯ 👑*\n*GOODBYE OFF KARNE K LIE LIKHO ☺️*\n*👑 ❮GOODBYE OFF❯ 👑*`);
+        config.GOODBYE_ENABLE = 'true';
+        try {
+            await updateUserConfig(botNumber, { ...config, GOODBYE_ENABLE: 'true' });
+        } catch (e) {
+            console.error('GOODBYE ON save error:', e);
+        }
+        return reply('✅ *GOODBYE ON*');
     }
+
+    if (value === 'off' || value === 'false') {
+        config.GOODBYE_ENABLE = 'false';
+        try {
+            await updateUserConfig(botNumber, { ...config, GOODBYE_ENABLE: 'false' });
+        } catch (e) {
+            console.error('GOODBYE OFF save error:', e);
+        }
+        return reply('❌ *GOODBYE OFF*');
+    }
+
+    return reply(`*GOODBYE:* ${config.GOODBYE_ENABLE || 'false'}\n*USE:* .goodbye on/off`);
 });
 
 // ============================================================
