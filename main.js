@@ -10,6 +10,7 @@ const {
     downloadContentFromMessage,
     getContentType,
     fetchLatestBaileysVersion,
+    fetchLatestWaWebVersion,
 } = require('@whiskeysockets/baileys');
 const { arslanmd } = require('./lib/system');
 const config = require('./config');
@@ -72,20 +73,64 @@ async function getCachedGroupMetadata(conn, jid) {
     return value;
 }
 
-// Keep WhatsApp Web protocol version current for pairing/linking.
+// Keep the WhatsApp Web protocol version current.
+// IMPORTANT: fetchLatestBaileysVersion() can lag behind the real web client.
+// A stale revision can generate a plausible pairing code which WhatsApp rejects
+// with “Couldn't link device”. We therefore read client_revision directly from
+// WhatsApp Web first, then use Baileys' helper only as a fallback.
 let baileysVersion;
+let baileysVersionFetchedAt = 0;
+const VERSION_CACHE_MS = 30 * 60 * 1000;
+
 async function getCurrentBaileysVersion() {
-    if (baileysVersion) return baileysVersion;
+    if (baileysVersion && Date.now() - baileysVersionFetchedAt < VERSION_CACHE_MS) {
+        return baileysVersion;
+    }
+
+    // Directly query WhatsApp Web. This avoids stale values returned by
+    // fetchLatestBaileysVersion() and also avoids responseType/parser issues.
     try {
-        const latest = await fetchLatestBaileysVersion();
+        const response = await axios.get('https://web.whatsapp.com/sw.js', {
+            timeout: 12000,
+            responseType: 'text',
+            headers: {
+                'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
+                'sec-fetch-site': 'none',
+                'accept': '*/*'
+            }
+        });
+        const body = String(response.data || '');
+        const match = body.match(/\\?"client_revision\\?"\s*:\s*(\d+)/);
+        if (match?.[1]) {
+            const revision = Number(match[1]);
+            if (Number.isSafeInteger(revision) && revision > 1000000000) {
+                baileysVersion = [2, 3000, revision];
+                baileysVersionFetchedAt = Date.now();
+                arslanLog(`Using LIVE WhatsApp Web version: ${baileysVersion.join('.')}`, 'success');
+                return baileysVersion;
+            }
+        }
+        throw new Error('client_revision not found in WhatsApp Web');
+    } catch (e) {
+        arslanLog(`Live WA Web version fetch failed: ${e.message}`, 'warning');
+    }
+
+    // Fallback only if WhatsApp Web itself cannot be queried.
+    try {
+        const latest = await Promise.race([
+            fetchLatestBaileysVersion(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Baileys version request timed out')), 10000))
+        ]);
         const version = Array.isArray(latest) ? latest : latest?.version;
-        if (Array.isArray(version)) {
+        if (Array.isArray(version) && version.length === 3) {
             baileysVersion = version;
-            arslanLog(`Using latest WhatsApp Web version: ${baileysVersion.join('.')}`, 'info');
+            baileysVersionFetchedAt = Date.now();
+            arslanLog(`Using Baileys fallback WhatsApp Web version: ${baileysVersion.join('.')}`, 'warning');
         }
     } catch (e) {
-        arslanLog(`Could not fetch latest WhatsApp Web version: ${e.message}`, 'warning');
+        arslanLog(`Could not fetch any WhatsApp Web version: ${e.message}`, 'warning');
     }
+
     return baileysVersion;
 }
 
@@ -117,11 +162,20 @@ const createSerial = (size) => crypto.randomBytes(size).toString('hex').slice(0,
 
 const getGroupAdmins = (participants) => {
     let admins = [];
-    for (let i of participants) {
-        if (i.admin == null) continue;
+    for (let i of participants || []) {
+        if (i.admin == null || !i.id) continue;
         admins.push(i.id);
     }
     return admins;
+};
+
+// WhatsApp can represent the same account with a device suffix
+// (e.g. 923xx:12@s.whatsapp.net) while the incoming message uses
+// 923xx@s.whatsapp.net. Compare the stable user part for admin checks.
+const sameJidUser = (a, b) => {
+    if (!a || !b) return false;
+    const clean = (jid) => String(jid).trim().toLowerCase().split('@')[0].split(':')[0];
+    return clean(a) === clean(b);
 };
 
 function isNumberAlreadyConnected(number) {
@@ -193,14 +247,31 @@ function setupAutoRestart(socket, number) {
 
         const sanitizedNumber = number.replace(/[^0-9]/g, '');
 
-        // 401 means the WhatsApp device was actually logged out/unlinked.
-        if (statusCode === 401 || /401|logged.?out/i.test(errorMessage)) {
+        // IMPORTANT: Do NOT delete MongoDB auth on a generic 401. During
+        // first-time pairing WhatsApp can reject the companion handshake with
+        // 401 even though the user has not manually unlinked the device.
+        // Deleting the auth here caused the exact loop seen on Render:
+        // 401 -> session deleted -> next attempt starts from zero.
+        // Only an explicit user unlink should clear a registered session.
+        const conflictText = JSON.stringify(lastDisconnect?.error || {});
+        const isExplicitDeviceRemoval = /device_removed|user_initiated|logged.?out/i.test(
+            `${errorMessage} ${conflictText}`
+        ) && statusCode === 401 && Boolean(socket.user?.id);
+        if (isExplicitDeviceRemoval) {
             activeSockets.delete(sanitizedNumber);
             socketCreationTime.delete(sanitizedNumber);
             await deleteSessionFromMongoDB(sanitizedNumber);
             await removeNumberFromMongoDB(sanitizedNumber);
             try { socket.ev.removeAllListeners(); } catch (_) {}
-            arslanLog(`Manual unlink detected for ${number}; session cleared.`, 'warning');
+            arslanLog(`Confirmed device removal for ${number}; session cleared.`, 'warning');
+            return;
+        }
+
+        if (statusCode === 401) {
+            activeSockets.delete(sanitizedNumber);
+            socketCreationTime.delete(sanitizedNumber);
+            try { socket.ev.removeAllListeners(); } catch (_) {}
+            arslanLog(`⚠️ WhatsApp returned 401 during pairing/reconnect for ${number}; auth was PRESERVED.`, 'warning');
             return;
         }
 
@@ -233,52 +304,70 @@ function setupAutoRestart(socket, number) {
     });
 }
 
-async function waitForPairingSocketReady(conn, timeoutMs = 20000) {
-    // requestPairingCode needs the WebSocket/auth state to be initialized.
-    // Calling it after a blind 3-second delay can race with the connection setup.
-    if (conn?.ws?.isOpen || conn?.ws?.readyState === 1) return;
+async function waitForPairingSocketReady(conn, state, timeoutMs = 30000) {
+    // requestPairingCode() requires the websocket AND the Noise public key.
+    // Checking only ws.open races the auth initialization and can cause
+    // "Cannot read properties of undefined (reading 'public')".
+    const ready = () => Boolean(
+        conn?.ws && (conn.ws.isOpen || conn.ws.readyState === 1) &&
+        state?.creds?.noiseKey?.public
+    );
+    if (ready()) return true;
 
-    await new Promise((resolve) => {
+    return await new Promise((resolve) => {
         let settled = false;
-        const finish = () => {
+        let timer;
+        const finish = (ok) => {
             if (settled) return;
             settled = true;
             clearTimeout(timer);
+            clearInterval(poll);
             try { conn.ev.off('connection.update', onUpdate); } catch (_) {}
-            resolve();
+            resolve(ok);
         };
-        const onUpdate = ({ connection, qr }) => {
-            if (qr || connection === 'open' || conn?.ws?.isOpen || conn?.ws?.readyState === 1) finish();
+        const onUpdate = ({ connection }) => {
+            if (ready()) finish(true);
+            else if (connection === 'close') finish(false);
         };
-        const timer = setTimeout(finish, timeoutMs);
+        const poll = setInterval(() => {
+            if (ready()) finish(true);
+        }, 100);
+        timer = setTimeout(() => finish(false), timeoutMs);
         conn.ev.on('connection.update', onUpdate);
     });
 }
 
-
-async function requestPairingCodeWithRetry(conn, sanitizedNumber, attempts = 3) {
-    let lastError;
-    for (let attempt = 1; attempt <= attempts; attempt++) {
-        try {
-            await waitForPairingSocketReady(conn, 20000);
-            if (!conn?.authState?.creds || conn.authState.creds.registered) {
-                throw new Error('Pairing session is not ready.');
-            }
-            const code = await conn.requestPairingCode(sanitizedNumber);
-            if (code) return code;
-            throw new Error('WhatsApp did not return a pairing code.');
-        } catch (err) {
-            lastError = err;
-            arslanLog(`Pairing request attempt ${attempt}/${attempts} failed for ${sanitizedNumber}: ${err.message}`, 'warning');
-            if (attempt < attempts) await delay(1500 * attempt);
-        }
+async function requestPairingCode(conn, state, sanitizedNumber) {
+    const ok = await waitForPairingSocketReady(conn, state, 30000);
+    if (!ok) {
+        throw new Error('WhatsApp pairing socket did not initialize in time.');
     }
-    throw lastError || new Error('Failed to request pairing code.');
+    if (!state?.creds?.noiseKey?.public) {
+        throw new Error('WhatsApp security key was not initialized.');
+    }
+    if (!conn || typeof conn.requestPairingCode !== 'function') {
+        throw new Error('WhatsApp pairing service is not available.');
+    }
+    // WhatsApp's pairing registration is sensitive to an immediate request
+    // after the WebSocket handshake. A short one-time settle delay avoids the
+    // race without making the website slow.
+    await delay(1500);
+    if (!conn?.ws || !(conn.ws.isOpen || conn.ws.readyState === 1)) {
+        throw new Error('WhatsApp pairing socket closed before code request.');
+    }
+    const code = await conn.requestPairingCode(sanitizedNumber);
+    if (!code) throw new Error('WhatsApp did not return a pairing code.');
+    const normalized = String(code).replace(/\s+/g, '').replace(/-/g, '').toUpperCase();
+    if (!/^[A-Z0-9]{8}$/.test(normalized)) {
+        throw new Error('WhatsApp returned an invalid pairing code.');
+    }
+    return normalized;
 }
 
-async function arslanPair(number, res = null) {
+async function arslanPair(number, res = null, options = {}) {
     let connectionLockKey;
     const sanitizedNumber = number.replace(/[^0-9]/g, '');
+    const forcePair = Boolean(options.forcePair);
 
     try {
         const sessionPath = path.join(__dirname, 'session', instanceId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80), `session_${sanitizedNumber}`);
@@ -298,17 +387,23 @@ async function arslanPair(number, res = null) {
         }
         global[connectionLockKey] = true;
 
-        // Check MongoDB session
-        const existingSession = await getSessionFromMongoDB(sanitizedNumber);
-
-        if (!existingSession) {
+        // Web/.pair pairing must start from a clean auth state. A stale or
+        // partially saved creds.json can otherwise leave noiseKey undefined.
+        let existingSession = await getSessionFromMongoDB(sanitizedNumber);
+        if (forcePair) {
+            if (existingSession || fs.existsSync(sessionPath)) {
+                await deleteSessionFromMongoDB(sanitizedNumber);
+                if (fs.existsSync(sessionPath)) await fs.remove(sessionPath);
+                arslanLog(`🧹 Cleared stale pairing state for ${sanitizedNumber}`, 'info');
+            }
+            existingSession = null;
+        } else if (!existingSession) {
             arslanLog(`No MongoDB session for ${sanitizedNumber} — new pairing required`, 'info');
             if (fs.existsSync(sessionPath)) {
                 await fs.remove(sessionPath);
                 arslanLog(`Cleaned leftover local session for ${sanitizedNumber}`, 'info');
             }
         } else {
-            // Session exists - restore from MongoDB
             fs.ensureDirSync(sessionPath);
             fs.writeFileSync(path.join(sessionPath, 'creds.json'), JSON.stringify(existingSession, null, 2));
             arslanLog(`🔄 Restored existing session from MongoDB for ${sanitizedNumber}`, 'success');
@@ -334,9 +429,9 @@ async function arslanPair(number, res = null) {
             emitOwnEvents: true,
             fireInitQueries: true,
             generateHighQualityLinkPreview: true,
-            syncFullHistory: true,
-            markOnlineOnConnect: true,
-            browser: Browsers.macOS('Desktop'),
+            syncFullHistory: false,
+            markOnlineOnConnect: false,
+            browser: Browsers.ubuntu('Chrome'),
             getMessage: async (key) => {
                 const msg = await arslanStore.loadMessage(key.remoteJid, key.id);
                 return msg && msg.message ? msg.message : { conversation: 'SIGMA-MD' };
@@ -375,11 +470,11 @@ async function arslanPair(number, res = null) {
         };
 
         // Pairing Code
-        if (!conn.authState.creds.registered) {
+        if (!state.creds.registered) {
             arslanLog(`🔐 Starting NEW pairing process for ${sanitizedNumber}`, 'info');
             try {
                 // Wait for WhatsApp auth/socket readiness and retry transient races.
-                const code = await requestPairingCodeWithRetry(conn, sanitizedNumber, 3);
+                const code = await requestPairingCode(conn, state, sanitizedNumber);
                 arslanLog(`Pairing Code for ${sanitizedNumber}: ${code}`, 'success');
                 if (res && !res.headersSent) {
                     res.send({ code, status: 'new_pairing' });
@@ -515,8 +610,11 @@ async function arslanPair(number, res = null) {
                         groupName = groupMetadata.subject;
                         participants = groupMetadata.participants;
                         groupAdmins = getGroupAdmins(participants);
-                        isBotAdmins = groupAdmins.includes(botNumber2);
-                        isAdmins = groupAdmins.includes(sender);
+                        // Do not use Array.includes() here: Baileys may return
+                        // admin JIDs with a device suffix, while the message
+                        // sender JID has no suffix.
+                        isBotAdmins = groupAdmins.some(admin => sameJidUser(admin, botNumber2));
+                        isAdmins = groupAdmins.some(admin => sameJidUser(admin, sender));
                     } catch (_) {}
                 }
 
@@ -580,7 +678,7 @@ global.__sigmaPair = arslanPair;
 
 
 router.get('/', (req, res) => res.sendFile(path.join(__dirname, 'pair.html')));
-router.get('/code', async (req, res) => { if (!req.query.number) return res.status(400).json({ error: 'Number required', message: 'WhatsApp number is required.' }); try { await arslanPair(req.query.number, res); } catch (e) { if (!res.headersSent) res.status(503).json({ error: 'PAIRING_UNAVAILABLE', message: e.message || 'Pairing service temporarily unavailable. Please try again.' }); } });
+router.get('/code', async (req, res) => { if (!req.query.number) return res.status(400).json({ error: 'Number required', message: 'WhatsApp number is required.' }); try { await arslanPair(req.query.number, res, { forcePair: true }); } catch (e) { if (!res.headersSent) res.status(503).json({ error: 'PAIRING_UNAVAILABLE', message: e.message || 'Pairing service temporarily unavailable. Please try again.' }); } });
 router.get('/status', async (req, res) => {
     const { number } = req.query;
     if (!number) {

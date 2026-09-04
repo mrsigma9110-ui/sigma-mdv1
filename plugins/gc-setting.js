@@ -179,101 +179,119 @@ async (conn, mek, m, { from, quoted, body, isCmd, command, args, q, isGroup, sen
     }
 });
 
-// ==================== SIMPLE & WORKING KICK COMMAND ====================
+// ==================== SIGMA-MD GROUP REMOVE COMMANDS ====================
+// .kick: reply to a member's message or mention them. The command message
+// itself is deleted after a successful removal.
 cmd({
     pattern: "kick",
-    alias: ["remove","k"],
-    desc: "Remove a group member",
-    category: "admin",
+    alias: ["remove", "k"],
+    desc: "Remove a mentioned/replied group member",
+    category: "group",
     react: "🗑️",
     filename: __filename
-},
-async (conn, mek, m, { from, isGroup, isAdmins, isBotAdmins, reply }) => {
-
+}, async (conn, mek, m, { from, isGroup, isAdmins, isBotAdmins, reply, groupMetadata, botNumber2 }) => {
     try {
-
         if (!isGroup) return reply("❌ This command only works in groups.");
-
         if (!isAdmins) return reply("❌ Only group admins can use this command.");
-
         if (!isBotAdmins) return reply("❌ I need admin rights to remove members.");
 
-        const target =
-            m.quoted?.sender ||
-            m.mentionedJid?.[0];
+        const target = m?.quoted?.sender ||
+            m?.mentionedJid?.[0] ||
+            mek?.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
+        if (!target) return reply("❌ Reply to a member's message or mention a user.");
 
-        if (!target)
-            return reply("❌ Reply to a message or mention a user!");
-
-        // remove user
-        await conn.groupParticipantsUpdate(
-            from,
-            [target],
-            "remove"
+        const normalizedTarget = String(target).split(':')[0];
+        const botJid = String(botNumber2 || conn.user?.id || '').split(':')[0];
+        const ownerJid = groupMetadata?.owner ? String(groupMetadata.owner).split(':')[0] : '';
+        const targetParticipant = (groupMetadata?.participants || []).find(p =>
+            String(p.id).split(':')[0] === normalizedTarget
         );
 
-        await conn.sendMessage(from,{
-            text:`🚫 @${target.split("@")[0]} has been removed!`,
-            mentions:[target]
-        },{ quoted:m });
+        if (normalizedTarget === botJid) return reply("❌ I can't remove myself.");
+        if (ownerJid && normalizedTarget === ownerJid) return reply("❌ Group owner cannot be removed.");
+        if (targetParticipant?.admin === 'superadmin') return reply("❌ Group owner cannot be removed.");
 
+        await conn.groupParticipantsUpdate(from, [target], "remove");
+
+        // Delete the command message automatically when possible.
+        try { await conn.sendMessage(from, { delete: mek.key }); } catch (_) {}
+
+        await conn.sendMessage(from, {
+            text: `🚫 @${normalizedTarget.replace(/\D/g, '')} removed successfully.`,
+            mentions: [target]
+        });
     } catch (error) {
-
         console.error("Kick error:", error);
-        reply("❌ Failed to remove member.");
-
+        await reply("❌ Failed to remove member. Make sure the bot is admin and the target is removable.");
     }
-
 });
-// ==================== SIMPLE & WORKING KICKALL COMMAND ====================
+
+// .kickall: remove every removable member. Other admins are demoted first so
+// they can be removed; the bot and the group owner are always preserved.
 cmd({
     pattern: "kickall",
-    desc: "Remove all non-admin members",
-    category: "admin",
+    alias: ["byeall"],
+    desc: "Remove all removable group members",
+    category: "group",
     react: "⚠️",
     filename: __filename
-},
-async (Void, citel) => {
+}, async (conn, mek, m, { from, isGroup, isAdmins, isBotAdmins, reply, groupMetadata, botNumber2 }) => {
     try {
+        if (!isGroup) return reply("❌ Group command only!");
+        if (!isAdmins) return reply("❌ Only group admins can use this command!");
+        if (!isBotAdmins) return reply("❌ I need admin rights to use .kickall!");
 
-        if (!citel.isGroup)
-            return citel.reply("❌ Group command only!");
+        const participants = groupMetadata?.participants || [];
+        const botJid = String(botNumber2 || conn.user?.id || '').split(':')[0];
+        const ownerJid = groupMetadata?.owner ? String(groupMetadata.owner).split(':')[0] :
+            (participants.find(p => p.admin === 'superadmin')?.id || '').split(':')[0];
 
-        const metadata = await Void.groupMetadata(citel.chat);
-        const participants = metadata.participants;
-
-        // admins list
-        const admins = participants
-            .filter(p => p.admin === 'admin' || p.admin === 'superadmin')
+        const keep = new Set([botJid, ownerJid].filter(Boolean));
+        const adminsToDemote = participants
+            .filter(p => (p.admin === 'admin') && !keep.has(String(p.id).split(':')[0]))
             .map(p => p.id);
 
-        // sender admin check
-        if (!admins.includes(citel.sender))
-            return citel.reply("❌ Only admins can use this!");
-
-        // bot jid
-        let botJid = Void.user.id.includes(':')
-            ? Void.user.id.split(':')[0] + "@s.whatsapp.net"
-            : Void.user.id;
-
-        // remove list (admins skip)
-        const toKick = participants
-            .map(p => p.id)
-            .filter(id => !admins.includes(id) && id !== botJid);
-
-        await citel.reply(`⚠️ Removing ${toKick.length} members...`);
-
-        for (let user of toKick) {
-            await Void.groupParticipantsUpdate(citel.chat, [user], "remove");
+        if (adminsToDemote.length) {
+            for (const jid of adminsToDemote) {
+                try { await conn.groupParticipantsUpdate(from, [jid], 'demote'); } catch (_) {}
+            }
         }
 
-        await citel.reply("✅ Kickall completed!");
+        const targets = participants
+            .filter(p => !keep.has(String(p.id).split(':')[0]))
+            .map(p => p.id);
 
+        if (!targets.length) {
+            try { await conn.sendMessage(from, { delete: mek.key }); } catch (_) {}
+            return reply("✅ No removable members found.");
+        }
+
+        await reply(`⚠️ Removing ${targets.length} members...`);
+        let removed = 0;
+        for (let i = 0; i < targets.length; i += 5) {
+            const batch = targets.slice(i, i + 5);
+            try {
+                await conn.groupParticipantsUpdate(from, batch, 'remove');
+                removed += batch.length;
+            } catch (e) {
+                console.error('kickall batch error:', e.message);
+                for (const jid of batch) {
+                    try {
+                        await conn.groupParticipantsUpdate(from, [jid], 'remove');
+                        removed++;
+                    } catch (_) {}
+                }
+            }
+        }
+
+        try { await conn.sendMessage(from, { delete: mek.key }); } catch (_) {}
+        await conn.sendMessage(from, { text: `✅ Kickall completed. Removed ${removed} members.` });
     } catch (err) {
-        console.log(err);
-        citel.reply("❌ Kickall failed!");
+        console.error("Kickall error:", err);
+        await reply("❌ Kickall failed. Check that the bot is admin and WhatsApp allows the removals.");
     }
 });
+
 //REMOVE ADMINS BY ARSLAN-MD OFFICIAL 
 cmd({
     pattern: "removeadmins",
@@ -302,8 +320,13 @@ async (conn, mek, m, {
             return reply("I need to be an admin to execute this command.");
         }
 
-        const allParticipants = groupMetadata.participants;
-        const adminParticipants = allParticipants.filter(member => groupAdmins.includes(member.id) && member.id !== conn.user.id && member.id !== `${botOwner}@s.whatsapp.net`);
+        const allParticipants = groupMetadata.participants || [];
+        const botBare = String(conn.user.id || "").split(":")[0].split("@")[0];
+        const adminParticipants = allParticipants.filter(member => {
+            if (!member || !member.id || member.admin == null) return false;
+            const memberBare = String(member.id).split("@")[0].split(":")[0];
+            return memberBare !== botBare && memberBare !== botOwner;
+        });
 
         if (adminParticipants.length === 0) {
             return reply("There are no admin members to remove.");
@@ -926,7 +949,7 @@ reply("❌ Error in admin check: " + err.message);
 //============== Group Kick All ==============
 cmd({
     pattern: "end",
-    alias: ["byeall", "kickall", "endgc"],
+    alias: ["endgc"],
     desc: "Removes all members (including admins) from the group except specified numbers",
     category: "admin",
     react: "⚠️",

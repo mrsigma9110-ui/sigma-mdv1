@@ -52,7 +52,7 @@ async function downloadMedia(media, type) {
 
 cmd({
     pattern: 'save',
-    alias: ['sendme', 'give', 'bhejo', 'sendkr'],
+    alias: ['sendme', 'give', 'giveme', 'bhejo', 'sendkr'],
     react: '💾',
     desc: 'Save/re-send a replied WhatsApp Status',
     category: 'download',
@@ -61,11 +61,12 @@ cmd({
     try {
         const quoted = getQuotedStatus(mek, m);
         if (!quoted || !Object.keys(quoted).length) {
-            return reply('*❌ Kisi WhatsApp Status ko reply karke `.save` / `.sendme` likho.*');
+            return reply('*❌ Kisi WhatsApp Status ko reply karke `.save` / `.sendme` / `.bhejo` / `.sendkr` / `.giveme` likho.*');
         }
 
-        const type = getContentType(quoted);
-        const media = quoted[type];
+        const unwrapped = unwrapMessage(quoted);
+        const type = getContentType(unwrapped);
+        const media = unwrapped[type];
 
         if (!media) return reply('*❌ Status media detect nahi ho saka.*');
 
@@ -79,12 +80,12 @@ cmd({
         };
         const downloadType = supported[type];
         if (!downloadType) {
-            const fallback = Object.keys(quoted).find(k => supported[k]);
+            const fallback = Object.keys(unwrapped).find(k => supported[k]);
             if (!fallback) return reply('*❌ Is status ka media type supported nahi hai.*');
         }
 
         const realType = downloadType || supported[Object.keys(quoted).find(k => supported[k])];
-        const realMedia = downloadType ? media : quoted[Object.keys(quoted).find(k => supported[k])];
+        const realMedia = downloadType ? media : unwrapped[Object.keys(unwrapped).find(k => supported[k])];
         const buffer = await downloadMedia(realMedia, realType);
         const caption = realMedia.caption || '';
 

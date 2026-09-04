@@ -1,5 +1,6 @@
 const { cmd, commands } = require('../arslan');
 const moment = require('moment-timezone');
+const config = require('../config');
 
 const ORDER = ['anime', 'fun', 'misc', 'general', 'download', 'group', 'owner', 'system', 'main'];
 const LABELS = {
@@ -46,8 +47,28 @@ cmd({
     let menu = `*╭━━━━━━━━━━━━━━━━━━━╮*\n*┃  ✧  𝙎𝙄𝙂𝙈𝘼-𝙈𝘿 𝙈𝙄𝙉𝙄  ✧  ┃*\n*┃  ❀ Commands: ${total}*\n*┃  ❀ ${now.format('DD/MM/YYYY')} • ${now.format('hh:mm A')}*\n*╰━━━━━━━━━━━━━━━━━━━╯*\n\n`;
     for (const cat of categories) menu += categoryBlock(LABELS[cat] || `✧ ${cat.toUpperCase()}`, grouped[cat]);
 
-    // Text-only delivery: avoids slow/unreliable external image fetching on menu.
-    return await conn.sendMessage(from, { text: menu.trim() }, { quoted: mek });
+    const newsletterInfo = {
+      newsletterJid: '120363425323587529@newsletter',
+      newsletterName: 'SIGMA-MD',
+      serverMessageId: -1
+    };
+    const contextInfo = {
+      forwardedNewsletterMessageInfo: newsletterInfo,
+      forwardingScore: 1,
+      isForwarded: true
+    };
+    // Restore the menu image + newsletter attribution. If the remote image is unavailable,
+    // fall back to the same menu text so the command never crashes.
+    try {
+      return await conn.sendMessage(from, {
+        image: { url: config.IMAGE_PATH },
+        caption: menu.trim(),
+        contextInfo
+      }, { quoted: mek });
+    } catch (imageErr) {
+      console.error('Menu image send failed, using text fallback:', imageErr.message);
+      return await conn.sendMessage(from, { text: menu.trim(), contextInfo }, { quoted: mek });
+    }
   } catch (err) {
     console.error('AllMenu Error:', err);
     return reply('❌ Menu generate nahi ho saka. Please try again.');

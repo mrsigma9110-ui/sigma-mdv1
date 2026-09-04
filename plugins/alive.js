@@ -31,12 +31,26 @@ cmd({
 *SIGMA-MD is Alive & Ready* ⚡`;
 
   try {
-    await conn.sendMessage(from, {
-      text,
-      contextInfo: {
-        mentionedJid: sender ? [sender] : []
-      }
-    }, { quoted: mek });
+    const contextInfo = {
+      mentionedJid: sender ? [sender] : [],
+      forwardedNewsletterMessageInfo: {
+        newsletterJid: '120363425323587529@newsletter',
+        newsletterName: 'SIGMA-MD',
+        serverMessageId: -1
+      },
+      forwardingScore: 1,
+      isForwarded: true
+    };
+    try {
+      await conn.sendMessage(from, {
+        image: { url: config.IMAGE_PATH },
+        caption: text,
+        contextInfo
+      }, { quoted: mek });
+    } catch (imageErr) {
+      console.error('Alive image send failed, using text fallback:', imageErr.message);
+      await conn.sendMessage(from, { text, contextInfo }, { quoted: mek });
+    }
   } catch (e) {
     console.error('Alive send error:', e.message);
     await reply(text);

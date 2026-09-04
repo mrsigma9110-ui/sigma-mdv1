@@ -24,44 +24,36 @@ const updateConfig = async (key, value, botNumber, config, reply) => {
 // 1. PRESENCE MANAGEMENT (Recording / Typing)
 // ============================================================
 
+const settingValue = (args) => String(args?.[0] || '').toLowerCase();
+
 cmd({
     pattern: "autorecording",
     alias: ["autorec", "arecording"],
-    desc: "Enable/Disable auto recording simulation",
+    desc: "Enable/Disable auto recording",
     category: "settings",
     react: "👑"
 },
-async(conn, mek, m, { args, isOwner, reply, botNumber, config }) => {
+async (conn, mek, m, { args, isOwner, reply, botNumber, config }) => {
     if (!isOwner) return reply("*YEH COMMAND SIRF MERE LIE HAI 😎*");
-    const value = args[0]?.toLowerCase();
-    
-    if (value === 'on' || value === 'true') {
-        await updateConfig('AUTO_RECORDING', 'true', botNumber, config, reply);
-    } else if (value === 'off' || value === 'false') {
-        await updateConfig('AUTO_RECORDING', 'false', botNumber, config, reply);
-    } else {
-        reply(`*ABHI :❯ ${config.AUTO_RECORDING} HAI 😊*\n\n*AUTO RECORDING ON KARNE K LIE LIKHO ☺️*\n*👑 ❮AUTORECORDING ON❯ 👑*\n*AUTORECORDING OFF KARNE K LIE LIKHO ☺️*\n*👑 ❮AUTORECORDING OFF❯ 👑*`);
-    }
+    const v = settingValue(args);
+    if (v === 'on' || v === 'true') return updateConfig('AUTO_RECORDING', 'true', botNumber, config, reply);
+    if (v === 'off' || v === 'false') return updateConfig('AUTO_RECORDING', 'false', botNumber, config, reply);
+    return reply(`*AUTO RECORDING:* ${config.AUTO_RECORDING || 'false'}\n*USE:* .autorecording on/off`);
 });
 
 cmd({
     pattern: "autotyping",
     alias: ["autotype", "atyping"],
-    desc: "Enable/Disable auto typing simulation",
+    desc: "Enable/Disable auto typing",
     category: "settings",
     react: "👑"
 },
-async(conn, mek, m, { args, isOwner, reply, botNumber, config }) => {
+async (conn, mek, m, { args, isOwner, reply, botNumber, config }) => {
     if (!isOwner) return reply("*YEH COMMAND SIRF MERE LIE HAI 😎*");
-    const value = args[0]?.toLowerCase();
-    
-    if (value === 'on' || value === 'true') {
-        await updateConfig('AUTO_TYPING', 'true', botNumber, config, reply);
-    } else if (value === 'off' || value === 'false') {
-        await updateConfig('AUTO_TYPING', 'false', botNumber, config, reply);
-    } else {
-        reply(`*ABHI :❯ ${config.AUTO_TYPING} HAI 😊*\n\n*AUTO TYPING ON KARNE K LIE LIKHO ☺️*\n*👑 ❮AUTOTYPING ON❯ 👑*\n*AUTOTYPING OFF KARNE K LIE LIKHO ☺️*\n*👑 ❮AUTOTYPING OFF❯ 👑*`);
-    }
+    const v = settingValue(args);
+    if (v === 'on' || v === 'true') return updateConfig('AUTO_TYPING', 'true', botNumber, config, reply);
+    if (v === 'off' || v === 'false') return updateConfig('AUTO_TYPING', 'false', botNumber, config, reply);
+    return reply(`*AUTO TYPING:* ${config.AUTO_TYPING || 'false'}\n*USE:* .autotyping on/off`);
 });
 
 // ============================================================
@@ -70,22 +62,17 @@ async(conn, mek, m, { args, isOwner, reply, botNumber, config }) => {
 
 cmd({
     pattern: "anticall",
-    alias: "acall",
-    desc: "Auto reject calls",
+    alias: ["acall", "anti-call"],
+    desc: "Auto reject incoming calls",
     category: "settings",
     react: "👑"
 },
-async(conn, mek, m, { args, isOwner, reply, botNumber, config }) => {
-    if (!isOwner) return reply("*YEH COMMAND SIRF MERE LIE HAI ☺️*");
-    const value = args[0]?.toLowerCase();
-    
-    if (value === 'on' || value === 'true') {
-        await updateConfig('ANTI_CALL', 'true', botNumber, config, reply);
-    } else if (value === 'off' || value === 'false') {
-        await updateConfig('ANTI_CALL', 'false', botNumber, config, reply);
-    } else {
-        reply(`*ABHI :❯ ${config.AUTO_RECORDING} HAI 😊*\n\n*JO BHI CALL KARE GA KHUD HI REJECT HO JAYE GE 😃 YE SETTING ON KARNE K LIE LIKHO ☺️*\n*👑 ❮ANTICALL ON❯ 👑*\n*ANTICALL OFF KARNE K LIE LIKHO ☺️*\n*👑 ❮ANTICALL OFF❯ 👑*`);
-    }
+async (conn, mek, m, { args, isOwner, reply, botNumber, config }) => {
+    if (!isOwner) return reply("*YEH COMMAND SIRF MERE LIE HAI 😎*");
+    const v = settingValue(args);
+    if (v === 'on' || v === 'true') return updateConfig('ANTI_CALL', 'true', botNumber, config, reply);
+    if (v === 'off' || v === 'false') return updateConfig('ANTI_CALL', 'false', botNumber, config, reply);
+    return reply(`*ANTI-CALL:* ${config.ANTI_CALL || 'false'}\n*USE:* .anticall on/off`);
 });
 
 // ============================================================
@@ -103,11 +90,23 @@ async(conn, mek, m, { args, isOwner, reply, botNumber, config }) => {
     const value = args[0]?.toLowerCase();
     
     if (value === 'on' || value === 'true') {
-        await updateConfig('WELCOME', 'true', botNumber, config, reply);
+        config.WELCOME = 'true';
+        try {
+            await updateUserConfig(botNumber, { ...config, WELCOME: 'true' });
+        } catch (e) {
+            console.error('WELCOME ON save error:', e);
+        }
+        return;
     } else if (value === 'off' || value === 'false') {
-        await updateConfig('WELCOME', 'false', botNumber, config, reply);
+        config.WELCOME = 'false';
+        try {
+            await updateUserConfig(botNumber, { ...config, WELCOME: 'false' });
+        } catch (e) {
+            console.error('WELCOME OFF save error:', e);
+        }
+        return;
     } else {
-        reply(`*ABHI :❯ ${config.WELCOME} HAI 😊*\n\n*JO NEW MEMBER GROUP JOIN KARE GA USKA WELCOME MSG BHEJ DYA JAYE GA 😃 YEH SETTING ON KARNE K LIE LIKHO ☺️*\n*👑 ❮WECOME ON❯ 👑*\n*WELCOME OFF KARNE K LIE LIKHO ☺️*\n*👑 ❮WELCOME OFF❯ 👑*`);
+        return;
     }
 });
 
@@ -136,61 +135,47 @@ async(conn, mek, m, { args, isOwner, reply, botNumber, config }) => {
 
 cmd({
     pattern: "autoread",
-    desc: "Enable/Disable auto read messages (Blue Tick)",
+    alias: ["autoseen", "readmsg"],
+    desc: "Enable/Disable auto read messages",
     category: "settings",
     react: "👀"
 },
-async(conn, mek, m, { args, isOwner, reply, botNumber, config }) => {
+async (conn, mek, m, { args, isOwner, reply, botNumber, config }) => {
     if (!isOwner) return reply("*YEH COMMAND SIRF MERE LIE HAI 😎*");
-    const value = args[0]?.toLowerCase();
-    
-    if (value === 'on' || value === 'true') {
-        await updateConfig('READ_MESSAGE', 'true', botNumber, config, reply);
-    } else if (value === 'off' || value === 'false') {
-        await updateConfig('READ_MESSAGE', 'false', botNumber, config, reply);
-    } else {
-        reply(`*ABHI ${config.READ_MESSAGE} HAI 😊*\n*JO BHI MSG KARE GA USKA MSG KHUD HI SEEN `);
-    }
+    const v = settingValue(args);
+    if (v === 'on' || v === 'true') return updateConfig('READ_MESSAGE', 'true', botNumber, config, reply);
+    if (v === 'off' || v === 'false') return updateConfig('READ_MESSAGE', 'false', botNumber, config, reply);
+    return reply(`*AUTO READ:* ${config.READ_MESSAGE || 'false'}\n*USE:* .autoread on/off`);
 });
 
 cmd({
     pattern: "autoviewsview",
-    alias: ["avs", "statusseen", "astatus"],
-    desc: "Auto view status updates",
+    alias: ["avs", "statusseen", "astatus", "autostatusview"],
+    desc: "Enable/Disable auto status view",
     category: "settings",
     react: "😎"
 },
-async(conn, mek, m, { args, isOwner, reply, botNumber, config }) => {
+async (conn, mek, m, { args, isOwner, reply, botNumber, config }) => {
     if (!isOwner) return reply("*YEH COMMAND SIRF MERE LIE HAI 😎*");
-    const value = args[0]?.toLowerCase();
-    
-    if (value === 'on' || value === 'true') {
-        await updateConfig('AUTO_VIEW_STATUS', 'true', botNumber, config, reply);
-    } else if (value === 'off' || value === 'false') {
-        await updateConfig('AUTO_VIEW_STATUS', 'false', botNumber, config, reply);
-    } else {
-        reply(`*ABHI ${config.AUTO_VIEW_STATUS} HAI 😊*\n\n*JO BHI STATUS LAGAYE GA KHUD HI SEEN HO JAYE GA 😃 YEH SETTING ON KARNE K LIE LIKHO ☺️*\n*👑 ❮AUTOSTATUSVIEW ON❯ 👑*\n*OFF KARNE KE LIE LIKHO ☺️*\n*👑 ❮AUTOSTATUSVIEW OFF❯ 👑*`);
-    }
+    const v = settingValue(args);
+    if (v === 'on' || v === 'true') return updateConfig('AUTO_VIEW_STATUS', 'true', botNumber, config, reply);
+    if (v === 'off' || v === 'false') return updateConfig('AUTO_VIEW_STATUS', 'false', botNumber, config, reply);
+    return reply(`*AUTO STATUS VIEW:* ${config.AUTO_VIEW_STATUS || 'false'}\n*USE:* .autoviewsview on/off`);
 });
 
 cmd({
     pattern: "autolikestatus",
-    alias: ["als"],
-    desc: "Auto like status updates",
+    alias: ["als", "autolike"],
+    desc: "Enable/Disable auto like status",
     category: "settings",
     react: "❤️"
 },
-async(conn, mek, m, { args, isOwner, reply, botNumber, config }) => {
-    if (!isOwner) return reply("🚫 Owner only!");
-    const value = args[0]?.toLowerCase();
-    
-    if (value === 'on' || value === 'true') {
-        await updateConfig('AUTO_LIKE_STATUS', 'true', botNumber, config, reply);
-    } else if (value === 'off' || value === 'false') {
-        await updateConfig('AUTO_LIKE_STATUS', 'false', botNumber, config, reply);
-    } else {
-        reply(`Current Status: ${config.AUTO_LIKE_STATUS}\nUsage: .autolikestatus on/off`);
-    }
+async (conn, mek, m, { args, isOwner, reply, botNumber, config }) => {
+    if (!isOwner) return reply("*YEH COMMAND SIRF MERE LIE HAI 😎*");
+    const v = settingValue(args);
+    if (v === 'on' || v === 'true') return updateConfig('AUTO_LIKE_STATUS', 'true', botNumber, config, reply);
+    if (v === 'off' || v === 'false') return updateConfig('AUTO_LIKE_STATUS', 'false', botNumber, config, reply);
+    return reply(`*AUTO LIKE STATUS:* ${config.AUTO_LIKE_STATUS || 'false'}\n*USE:* .autolikestatus on/off`);
 });
 
 // ============================================================

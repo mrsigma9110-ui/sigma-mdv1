@@ -1,64 +1,43 @@
 const { cmd } = require('../arslan');
-const { sleep } = require('../lib/functions');
 
-cmd({
-  pattern: "ping",
-  desc: "Live ping speed monitor",
-  category: "main",
-  react: "👑",
-  filename: __filename
-}, async (conn, mek, m, { from, reply }) => {
+const NEWSLETTER = {
+  newsletterJid: '120363425323587529@newsletter',
+  newsletterName: 'SIGMA-MD',
+  serverMessageId: -1
+};
+
+async function runPing(conn, mek, m, { from, myquoted }) {
+  const contextInfo = {
+    forwardedNewsletterMessageInfo: NEWSLETTER,
+    forwardingScore: 1,
+    isForwarded: true
+  };
 
   try {
-
-    // start reaction
-    await conn.sendMessage(from, {
-      react: { text: "👑", key: m.key }
-    });
-
-    // initial message
+    const start = Date.now();
     const msg = await conn.sendMessage(from, {
-      text: "*TESTING....🤗*"
-    }, { quoted: mek });
+      text: '*👑 PONG...*',
+      contextInfo
+    }, { quoted: myquoted || mek });
 
-    await sleep(1000);
+    const latency = Date.now() - start;
+    const text = `*╭━━〔 👑 SIGMA-MD PONG 〕━━╮*\n*┃* 🏓 *PONG:* ${latency} ms\n*┃* 🟢 *STATUS:* ONLINE\n*╰━━━━━━━━━━━━━━━━━━━━━━╯*`;
 
-    // 🔁 live update loop (30 seconds)
-    for (let i = 0; i < 30; i++) {
-
-      const start = Date.now();
-
-      // tiny delay simulating ping check
-      await sleep(50);
-
-      const ping = Date.now() - start;
-
-      await conn.relayMessage(from, {
-        protocolMessage: {
-          key: msg.key,
-          type: 14,
-          editedMessage: {
-            conversation: `*👑 SPEED :❯ ${ping} 👑*`
-          }
-        }
-      }, {});
-
-      await sleep(1000);
+    try {
+      await conn.sendMessage(from, { text, edit: msg.key, contextInfo });
+    } catch (_) {
+      await conn.sendMessage(from, { text, contextInfo }, { quoted: myquoted || mek });
     }
-
-    // end reaction
-    await conn.sendMessage(from, {
-      react: { text: "😍", key: m.key }
-    });
-
   } catch (e) {
-
-    console.error("Ping Error:", e);
-
-    await conn.sendMessage(from, {
-      react: { text: "❌", key: m.key }
-    });
-
-    reply("*Ping failed — try again.*");
+    console.error('Ping Error:', e);
   }
-});
+}
+
+cmd({
+  pattern: 'ping',
+  alias: ['pong'],
+  desc: 'Check bot ping speed',
+  category: 'main',
+  react: '👑',
+  filename: __filename
+}, runPing);

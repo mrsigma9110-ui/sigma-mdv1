@@ -15,10 +15,14 @@ async (conn, mek, m, { from, participants, reply, isGroup, senderNumber, groupAd
     try {
         if (!isGroup) return reply("*YEH COMMAND SIRF GROUPS ME USE KARE 😊*");
         
-        const botOwner = conn.user.id.split(":")[0]; // Extract bot owner's number
-        const senderJid = senderNumber + "@s.whatsapp.net";
+        const botOwner = conn.user.id.split(":")[0].split("@")[0]; // Extract bot owner's number
+        const senderBare = String(senderNumber || "").replace(/[^0-9]/g, "");
+        const isGroupAdmin = (groupAdmins || []).some(jid => {
+            const adminBare = String(jid || "").split("@")[0].split(":")[0].replace(/[^0-9]/g, "");
+            return adminBare && adminBare === senderBare;
+        });
 
-        if (!groupAdmins.includes(senderJid) && senderNumber !== botOwner) {
+        if (!isGroupAdmin && senderBare !== String(botOwner).replace(/[^0-9]/g, "")) {
             return reply("*YEH COMMAND SIRF ADMINS USE KAR SAKTE HAI 😊*");
         }
 

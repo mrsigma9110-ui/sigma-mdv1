@@ -42,7 +42,7 @@ async function getLocalPairCode(number) {
         setHeader() {}
     };
 
-    await pairFn(number, response);
+    await pairFn(number, response, { forcePair: true });
 
     if (result?.code) return result.code;
     if (result?.status === 'already_connected') {

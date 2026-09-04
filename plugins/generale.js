@@ -1,64 +1,73 @@
-const { cmd, commands } = require('../arslan');
+const { cmd } = require('../arslan');
 const config = require('../config');
 const os = require('os');
 
-// =================================================================
-// 🏓 COMMANDE PING (Style Speedtest)
-// =================================================================
+function formatUptime(seconds) {
+    const s = Math.floor(seconds);
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    return `${d}d ${h}h ${m}m ${sec}s`;
+}
+
+// Fast bot speed / uptime command. .up and .speed use the same handler.
 cmd({
-    pattern: "Uptime",
-    alias: ["speed"],
-    desc: "Vérifier la latence et les ressources",
-    category: "general",
-    react: "👑"
-},
-async(conn, mek, m, { from, reply, myquoted }) => {
+    pattern: 'up',
+    alias: ['speed', 'uptime'],
+    desc: 'Check bot speed, uptime and RAM',
+    category: 'general',
+    react: '⚡',
+    filename: __filename
+}, async (conn, mek, m, { from, reply, myquoted }) => {
+    const newsletterInfo = {
+        newsletterJid: '120363425323587529@newsletter',
+        newsletterName: 'SIGMA-MD',
+        serverMessageId: -1
+    };
+    const contextInfo = {
+        forwardedNewsletterMessageInfo: newsletterInfo,
+        forwardingScore: 1,
+        isForwarded: true
+    };
+
     try {
         const start = Date.now();
-        
-        // 1. Message d'attente
-        const msg = await conn.sendMessage(from, { text: '*T E S T I N G....*' }, { quoted: myquoted });
-        
-        const end = Date.now();
-        const latency = end - start;
-        
-        // 2. Calcul Mémoire (RAM)
-        const totalMem = (os.totalmem() / 1024 / 1024).toFixed(0);
-        const freeMem = (os.freemem() / 1024 / 1024).toFixed(0);
-        const usedMem = (totalMem - freeMem).toFixed(0);
+        const msg = await conn.sendMessage(from, {
+            text: '*⚡ SIGMA-MD SPEED TESTING...*',
+            contextInfo
+        }, { quoted: myquoted || mek });
+        const latency = Date.now() - start;
+        const totalMem = Math.round(os.totalmem() / 1024 / 1024);
+        const usedMem = Math.round(process.memoryUsage().rss / 1024 / 1024);
+        const speedText = `*╭━━〔 ⚡ SIGMA-MD SPEED 〕━━╮*
+*┃* 🚀 *SPEED:* ${latency} ms
+*┃* ⏱️ *UPTIME:* ${formatUptime(process.uptime())}
+*┃* 🧠 *RAM:* ${usedMem} MB / ${totalMem} MB
+*┃* 🟢 *STATUS:* ONLINE
+*╰━━━━━━━━━━━━━━━━━━━━━━╯*`;
 
-        // 3. Message Final Stylé
-        const pingMsg = `
-*ꜱɪɢᴍᴀ-ᴍᴅ UPTIME* ⚡
-
-* UPTIME :❯  ${latency}*
-
-*👑 RAM :❯ ${usedMem}MB / ${totalMem}MB
-
-`;
-
-        // 4. Édition du message (Effet visuel)
-        await conn.sendMessage(from, { text: pingMsg, edit: msg.key });
-
+        // Edit the same message; if editing is rejected by the server, send a
+        // normal result so the command still completes.
+        try {
+            await conn.sendMessage(from, { text: speedText, edit: msg.key, contextInfo });
+        } catch (_) {
+            await conn.sendMessage(from, { text: speedText, contextInfo }, { quoted: myquoted || mek });
+        }
     } catch (e) {
-        reply("Error: " + e.message);
+        console.error('Speed Error:', e);
+        await reply('❌ Speed check failed: ' + e.message);
     }
 });
 
-
-// =================================================================
-// 👑 COMMANDE OWNER (Carte de visite)
-// =================================================================
+// Owner contact
 cmd({
-    pattern: "owner",
-    desc: "Contacter le créateur",
-    category: "general",
-    react: "👑"
-},
-async(conn, mek, m, { from, myquoted }) => {
+    pattern: 'owner',
+    desc: 'Contacter le créateur',
+    category: 'general',
+    react: '👑'
+}, async (conn, mek, m, { from, myquoted }) => {
     const ownerNumber = config.OWNER_NUMBER;
-    
-    // Création d'une vCard (Fiche contact)
     const vcard = 'BEGIN:VCARD\n' +
                   'VERSION:3.0\n' +
                   'FN:ꜱɪɢᴍᴀ-ᴍᴅ (Owner)\n' +
@@ -71,5 +80,5 @@ async(conn, mek, m, { from, myquoted }) => {
             displayName: 'ꜱɪɢᴍᴀ-ᴍᴅ',
             contacts: [{ vcard }]
         }
-    }, { quoted: myquoted });
+    }, { quoted: myquoted || mek });
 });
