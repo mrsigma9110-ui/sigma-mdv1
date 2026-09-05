@@ -87,53 +87,21 @@ async function getCurrentBaileysVersion() {
         return baileysVersion;
     }
 
-    // Directly query WhatsApp Web. This avoids stale values returned by
-    // fetchLatestBaileysVersion() and also avoids responseType/parser issues.
     try {
-        const response = await axios.get('https://web.whatsapp.com/sw.js', {
-            timeout: 12000,
-            responseType: 'text',
-            headers: {
-                'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
-                'sec-fetch-site': 'none',
-                'accept': '*/*'
-            }
-        });
-        const body = String(response.data || '');
-        const match = body.match(/\\?"client_revision\\?"\s*:\s*(\d+)/);
-        if (match?.[1]) {
-            const revision = Number(match[1]);
-            if (Number.isSafeInteger(revision) && revision > 1000000000) {
-                baileysVersion = [2, 3000, revision];
-                baileysVersionFetchedAt = Date.now();
-                arslanLog(`Using LIVE WhatsApp Web version: ${baileysVersion.join('.')}`, 'success');
-                return baileysVersion;
-            }
-        }
-        throw new Error('client_revision not found in WhatsApp Web');
-    } catch (e) {
-        arslanLog(`Live WA Web version fetch failed: ${e.message}`, 'warning');
-    }
-
-    // Fallback only if WhatsApp Web itself cannot be queried.
-    try {
-        const latest = await Promise.race([
-            fetchLatestBaileysVersion(),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Baileys version request timed out')), 10000))
-        ]);
+        const latest = await fetchLatestBaileysVersion();
         const version = Array.isArray(latest) ? latest : latest?.version;
         if (Array.isArray(version) && version.length === 3) {
             baileysVersion = version;
             baileysVersionFetchedAt = Date.now();
-            arslanLog(`Using Baileys fallback WhatsApp Web version: ${baileysVersion.join('.')}`, 'warning');
+            arslanLog(`Using Baileys-compatible WhatsApp Web version: ${baileysVersion.join('.')}`, 'success');
+            return baileysVersion;
         }
     } catch (e) {
-        arslanLog(`Could not fetch any WhatsApp Web version: ${e.message}`, 'warning');
+        arslanLog(`Baileys version fetch failed: ${e.message}`, 'warning');
     }
 
-    return baileysVersion;
+    return undefined;
 }
-
 
 function createarslanStore() {
     const store = {
@@ -372,22 +340,26 @@ async function requestPairingCode(conn, state, sanitizedNumber) {
     if (!ok) {
         throw new Error('WhatsApp pairing socket did not initialize in time.');
     }
-    if (!state?.creds?.noiseKey?.public) {
-        throw new Error('WhatsApp security key was not initialized.');
-    }
     if (!conn || typeof conn.requestPairingCode !== 'function') {
         throw new Error('WhatsApp pairing service is not available.');
     }
-    // WhatsApp's pairing registration is sensitive to an immediate request
-    // after the WebSocket handshake. A short one-time settle delay avoids the
-    // race without making the website slow.
-    await delay(1500);
+
+    // Short settle delay: preserves the previously working pairing behavior
+    // while avoiding the early WebSocket race.
+    await delay(500);
+
     if (!conn?.ws || !(conn.ws.isOpen || conn.ws.readyState === 1)) {
         throw new Error('WhatsApp pairing socket closed before code request.');
     }
+
     const code = await conn.requestPairingCode(sanitizedNumber);
     if (!code) throw new Error('WhatsApp did not return a pairing code.');
-    const normalized = String(code).replace(/\s+/g, '').replace(/-/g, '').toUpperCase();
+
+    const normalized = String(code)
+        .replace(/\s+/g, '')
+        .replace(/-/g, '')
+        .toUpperCase();
+
     if (!/^[A-Z0-9]{8}$/.test(normalized)) {
         throw new Error('WhatsApp returned an invalid pairing code.');
     }
