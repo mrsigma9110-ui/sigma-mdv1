@@ -694,11 +694,28 @@ async function arslanPair(number, res = null, options = {}) {
                         groupName = groupMetadata.subject;
                         participants = groupMetadata.participants;
                         groupAdmins = getGroupAdmins(participants);
-                        // Do not use Array.includes() here: Baileys may return
-                        // admin JIDs with a device suffix, while the message
-                        // sender JID has no suffix.
-                        isBotAdmins = groupAdmins.some(admin => sameJidUser(admin, botNumber2));
-                        isAdmins = groupAdmins.some(admin => sameJidUser(admin, sender));
+                        // Baileys can deliver group messages using a LID while
+                        // group metadata may contain the user's phone JID (or
+                        // vice-versa). Check both participant JIDs when present.
+                        const senderCandidates = [
+                            sender,
+                            mek?.key?.participantAlt,
+                            mek?.key?.participant,
+                            m?.key?.participantAlt,
+                            m?.key?.participant
+                        ].filter(Boolean);
+                        const botCandidates = [botNumber2, conn.user?.id].filter(Boolean);
+
+                        isBotAdmins = groupAdmins.some(admin =>
+                            botCandidates.some(candidate => sameJidUser(admin, candidate))
+                        );
+                        isAdmins = participants.some(participant => {
+                            if (!participant || participant.admin == null) return false;
+                            const ids = [participant.id, participant.jid, participant.phoneNumber, participant.lid].filter(Boolean);
+                            return senderCandidates.some(candidate =>
+                                ids.some(id => sameJidUser(id, candidate))
+                            );
+                        });
                     } catch (_) {}
                 }
 
