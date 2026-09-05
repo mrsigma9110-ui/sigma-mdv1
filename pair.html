@@ -844,7 +844,6 @@ generateBtn.addEventListener('click', async () => {
   hideError();
   showWait('🚀 Requesting quantum pairing code...');
   generateBtn.disabled = true;
-  let data = null;
   try {
     const numberDigits = cleanNum.replace('+', '');
     const response = await fetch(`/code?number=${numberDigits}`);

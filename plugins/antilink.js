@@ -38,7 +38,7 @@ cmd({
 
 cmd({
   pattern: 'antilinkwarn',
-  alias: ['antilinkwarnings', 'linkwarn', 'anlinkwarn', 'anlinkwarnings'],
+  alias: ['antilinkwarnings', 'linkwarn'],
   desc: '3 link warnings, then automatically remove the member',
   category: 'group',
   react: '⚠️',
