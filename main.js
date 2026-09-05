@@ -20,6 +20,7 @@ const {
     connectdb,
     saveSessionToMongoDB,
     getSessionFromMongoDB,
+    getAuthStateFromMongoDB,
     deleteSessionFromMongoDB,
     getUserConfigFromMongoDB,
     updateUserConfigInMongoDB,
@@ -394,6 +395,46 @@ async function requestPairingCode(conn, state, sanitizedNumber) {
     return normalized;
 }
 
+
+async function snapshotAuthFiles(sessionPath) {
+    const files = {};
+    async function walk(dir, prefix = '') {
+        if (!fs.existsSync(dir)) return;
+        const entries = await fs.readdir(dir, { withFileTypes: true });
+        for (const entry of entries) {
+            const full = path.join(dir, entry.name);
+            const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+            if (entry.isDirectory()) {
+                await walk(full, rel);
+            } else {
+                try {
+                    files[rel] = await fs.readFile(full, 'utf8');
+                } catch (_) {
+                    // Baileys auth files are JSON/text. Ignore a file that is
+                    // temporarily locked or not UTF-8 rather than breaking creds updates.
+                }
+            }
+        }
+    }
+    await walk(sessionPath);
+    return files;
+}
+
+async function restoreAuthFiles(sessionPath, authFiles) {
+    if (!authFiles || typeof authFiles !== 'object') return false;
+    await fs.ensureDir(sessionPath);
+    let restored = 0;
+    for (const [relative, content] of Object.entries(authFiles)) {
+        if (typeof content !== 'string') continue;
+        const target = path.resolve(sessionPath, relative);
+        if (!target.startsWith(path.resolve(sessionPath) + path.sep)) continue;
+        await fs.ensureDir(path.dirname(target));
+        await fs.writeFile(target, content, 'utf8');
+        restored++;
+    }
+    return restored > 0;
+}
+
 async function arslanPair(number, res = null, options = {}) {
     let connectionLockKey;
     const sanitizedNumber = number.replace(/[^0-9]/g, '');
@@ -419,7 +460,8 @@ async function arslanPair(number, res = null, options = {}) {
 
         // Web/.pair pairing must start from a clean auth state. A stale or
         // partially saved creds.json can otherwise leave noiseKey undefined.
-        let existingSession = await getSessionFromMongoDB(sanitizedNumber);
+        const storedAuth = await getAuthStateFromMongoDB(sanitizedNumber);
+        let existingSession = storedAuth?.credentials || null;
         if (forcePair) {
             if (existingSession || fs.existsSync(sessionPath)) {
                 await deleteSessionFromMongoDB(sanitizedNumber);
@@ -435,8 +477,15 @@ async function arslanPair(number, res = null, options = {}) {
             }
         } else {
             fs.ensureDirSync(sessionPath);
-            fs.writeFileSync(path.join(sessionPath, 'creds.json'), JSON.stringify(existingSession, null, 2));
-            arslanLog(`🔄 Restored existing session from MongoDB for ${sanitizedNumber}`, 'success');
+            let restored = false;
+            if (storedAuth?.authFiles) {
+                restored = await restoreAuthFiles(sessionPath, storedAuth.authFiles);
+            }
+            if (!restored) {
+                // Backward compatibility with the old DB format.
+                fs.writeFileSync(path.join(sessionPath, 'creds.json'), JSON.stringify(existingSession, null, 2));
+            }
+            arslanLog(`🔄 Restored existing session from MongoDB for ${sanitizedNumber}${restored ? ' (full auth state)' : ''}`, 'success');
         }
 
         const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
@@ -525,14 +574,19 @@ async function arslanPair(number, res = null, options = {}) {
 
         // Save creds on update
         conn.ev.on('creds.update', async () => {
-            await saveCreds();
-            const fileContent = await fs.readFile(path.join(sessionPath, 'creds.json'), 'utf8');
-            const creds = JSON.parse(fileContent);
-            const existingSessionCheck = await getSessionFromMongoDB(sanitizedNumber);
-            const isNewSession = !existingSessionCheck;
-            await saveSessionToMongoDB(sanitizedNumber, creds);
-            if (isNewSession) {
-                arslanLog(`🎉 NEW user ${sanitizedNumber} successfully registered!`, 'success');
+            try {
+                await saveCreds();
+                const fileContent = await fs.readFile(path.join(sessionPath, 'creds.json'), 'utf8');
+                const creds = JSON.parse(fileContent);
+                const authFiles = await snapshotAuthFiles(sessionPath);
+                const existingSessionCheck = await getSessionFromMongoDB(sanitizedNumber);
+                const isNewSession = !existingSessionCheck;
+                await saveSessionToMongoDB(sanitizedNumber, creds, authFiles);
+                if (isNewSession) {
+                    arslanLog(`🎉 NEW user ${sanitizedNumber} successfully registered!`, 'success');
+                }
+            } catch (e) {
+                arslanLog(`Auth-state save error for ${sanitizedNumber}: ${e.message}`, 'error');
             }
         });
 
