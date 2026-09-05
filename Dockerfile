@@ -5,8 +5,6 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=8000
 
-# Baileys 6.7.x pulls libsignal through a git dependency.
-# Install git so npm can resolve that dependency during the build.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*

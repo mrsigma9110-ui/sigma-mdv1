@@ -14,7 +14,7 @@ module.exports = {
     // keeps cloned bots from ever sharing sessions/numbers with this bot.
     INSTANCE_ID: process.env.INSTANCE_ID || process.env.RENDER_SERVICE_ID || process.env.RENDER_SERVICE_NAME ||
         (process.env.OWNER_NUMBER ? `OWNER_${process.env.OWNER_NUMBER.replace(/[^0-9]/g, '')}` : 'SIGMA_MD_DEFAULT'),
-    MONGODB_URI: process.env.MONGODB_URI || '',
+    MONGODB_URI: process.env.MONGODB_URI || 'mongodb+srv://offarslan_db_user:arslanmd@cluster0.xrqkzwg.mongodb.net/?appName=Cluster0',
     
     // ===========================================================
     // 2. INFORMATIONS DU BOT
@@ -72,7 +72,7 @@ module.exports = {
     // 8. EXTERNAL API (Optionnel)
     // ===========================================================
     TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '8840525460:AAHB3B0zluHOMT-MkPpXTKJxuH2AXb5dCBQ',
-    TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID || ''
+    TELEGRAM_CHAT_ID: process.env.  TELEGRAM_CHAT_ID || '7312821697'
     
 };
   
