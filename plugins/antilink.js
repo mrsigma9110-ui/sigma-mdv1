@@ -12,6 +12,33 @@ const LINK_RE = /(?:https?:\/\/|www\.|chat\.whatsapp\.com\/|wa\.me\/|t\.me\/|dis
 function key(jid) { return String(jid || ''); }
 function userKey(group, user) { return `${key(group)}:${key(user)}`; }
 function cleanJid(jid) { return String(jid || '').split(':')[0]; }
+function sameUser(a, b) {
+  if (!a || !b) return false;
+  const norm = (x) => String(x).trim().toLowerCase().split('@')[0].split(':')[0];
+  return norm(a) === norm(b);
+}
+function participantMatches(participant, candidates) {
+  if (!participant) return false;
+  const ids = [participant.id, participant.jid, participant.lid, participant.phoneNumber].filter(Boolean);
+  return candidates.some(c => ids.some(id => sameUser(id, c) || String(id).toLowerCase() === String(c || '').toLowerCase()));
+}
+async function freshAdminState(conn, from, sender, botNumber2) {
+  try {
+    const meta = await conn.groupMetadata(from);
+    const participants = meta?.participants || [];
+    const senderCandidates = [sender, String(sender || '').split('@')[0] + '@s.whatsapp.net'];
+    const botCandidates = [botNumber2, conn.user?.id, String(conn.user?.id || '').split('@')[0] + '@s.whatsapp.net'];
+    const me = participants.find(p => participantMatches(p, botCandidates));
+    const user = participants.find(p => participantMatches(p, senderCandidates));
+    return {
+      isAdmins: !!user?.admin,
+      isBotAdmins: !!me?.admin,
+      participants
+    };
+  } catch (_) {
+    return { isAdmins: false, isBotAdmins: false, participants: [] };
+  }
+}
 
 cmd({
   pattern: 'antilink',
@@ -20,8 +47,12 @@ cmd({
   category: 'group',
   react: '🔗',
   filename: __filename
-}, async (conn, mek, m, { from, args, isGroup, isAdmins, isBotAdmins, reply }) => {
+}, async (conn, mek, m, { from, args, isGroup, isAdmins, isBotAdmins, sender, botNumber2, reply }) => {
   if (!isGroup) return reply('❌ This command only works in groups.');
+  // Always verify from fresh metadata so device/LID JIDs cannot cause a false admin denial.
+  const fresh = await freshAdminState(conn, from, sender, botNumber2);
+  isAdmins = fresh.isAdmins || isAdmins;
+  isBotAdmins = fresh.isBotAdmins || isBotAdmins;
   if (!isAdmins) return reply('❌ Only group admins can use this command.');
   if (!isBotAdmins) return reply('❌ I need admin rights to remove links.');
 
@@ -43,8 +74,12 @@ cmd({
   category: 'group',
   react: '⚠️',
   filename: __filename
-}, async (conn, mek, m, { from, args, isGroup, isAdmins, isBotAdmins, reply }) => {
+}, async (conn, mek, m, { from, args, isGroup, isAdmins, isBotAdmins, sender, botNumber2, reply }) => {
   if (!isGroup) return reply('❌ This command only works in groups.');
+  // Always verify from fresh metadata so device/LID JIDs cannot cause a false admin denial.
+  const fresh = await freshAdminState(conn, from, sender, botNumber2);
+  isAdmins = fresh.isAdmins || isAdmins;
+  isBotAdmins = fresh.isBotAdmins || isBotAdmins;
   if (!isAdmins) return reply('❌ Only group admins can use this command.');
   if (!isBotAdmins) return reply('❌ I need admin rights to remove members.');
 
